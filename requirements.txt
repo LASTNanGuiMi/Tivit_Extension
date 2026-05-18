@@ -1,0 +1,13 @@
+aeon==1.2.0
+dadapy==0.3.3
+einops==0.8.1
+mantis-tsfm @ git+https://github.com/roschmsi/mantis.git
+momentfm @ git+https://github.com/roschmsi/moment.git
+numpy==1.25.2
+open_clip_torch==2.32.0
+pandas==2.3.0
+scikit-learn==1.6.1
+torch==2.7.1
+torchvision==0.22.1
+tqdm==4.67.1
+transformers==4.53.0
