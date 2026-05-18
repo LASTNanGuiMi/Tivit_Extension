@@ -1,11 +1,8 @@
 # TiViT Extension
 
-基于 TiViT 的时间序列分类实验扩展。本仓库将 UCR/UEA 时间序列样本转换为图像，再使用冻结的预训练 Vision Transformer 提取表示，并在这些表示上训练轻量分类器。项目也支持将 TiViT 表示与 Mantis、MOMENT 等时间序列基础模型表示拼接，用于分类、表示对齐和表示结构分析。
+基于 TiViT 的时间序列分类实验扩展。本仓库将 UCR/UEA 时间序列样本转换为折线图，再使用冻结的预训练 Vision Transformer 提取表示，并在这些表示上训练轻量分类器。项目也支持将 TiViT 表示与 Mantis、MOMENT 等时间序列基础模型表示拼接，用于分类、表示对齐和表示结构分析。
 
-当前实现支持两种时间序列图像化方式：
-
-- `line_plot`：默认方式，将每个通道绘制为 224x224 折线图。
-- `segment`：将时间序列切成二维灰度片段后送入 ViT。
+当前实验统一使用 `line_plot` 折线图输入方式：每个时间序列通道会被绘制为 224x224 的折线图。
 
 ## 项目结构
 
@@ -17,7 +14,7 @@
 ├── src/
 │   ├── arguments.py                # 命令行参数
 │   ├── datautils.py                # UCR/UEA 数据加载与预处理
-│   ├── tivit.py                    # 时间序列到图像转换与 ViT 表示提取
+│   ├── tivit.py                    # 时间序列折线图转换与 ViT 表示提取
 │   ├── embedding.py                # TiViT/Mantis/MOMENT 表示抽取与拼接
 │   ├── classifier.py               # 线性分类与传统分类器
 │   ├── analysis.py                 # intrinsic dimension、PCA、alignment 分析
@@ -38,7 +35,7 @@ TiViT 的核心流程是：
 
 1. 从 UCR 或 UEA benchmark 加载时间序列数据。
 2. 对时间序列做必要的缺失值插值、补齐和标准化。
-3. 将每个时间序列通道转换为图像。
+3. 将每个时间序列通道转换为折线图。
 4. 使用冻结的 ViT、CLIP、DINOv2、SigLIP 2 或 MAE 模型抽取隐藏层表示。
 5. 对隐藏表示做 `mean` 或 `cls_token` 聚合。
 6. 使用 `logistic_regression`、`nearest_centroid` 或 `random_forest` 分类器评估分类准确率。
@@ -110,8 +107,6 @@ python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --classifier_type logistic_regression \
   --datasets ucr \
   --dataset_names ECG200 FordA \
@@ -129,8 +124,6 @@ python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --classifier_type logistic_regression \
   --datasets uea \
   --dataset_names BasicMotions SelfRegulationSCP1 \
@@ -159,34 +152,6 @@ DATASETS="ECG200 FordA" \
 bash scripts/run_lineplot_ucr.sh
 ```
 
-## 使用 segment 图像模式
-
-`segment` 模式会将一维序列切成二维灰度图。此时 `--patch_size` 和 `--stride` 会参与切分：
-
-```bash
-python main.py \
-  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
-  --vit_1_layer 14 \
-  --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
-  --classifier_type logistic_regression \
-  --datasets ucr \
-  --dataset_names ECG200 \
-  --data_dir /path/to/dataset \
-  --result_dir /path/to/results \
-  --random_seed 2021 \
-  --val_ratio 0.2 \
-  --image_mode segment
-```
-
-`--patch_size` 支持：
-
-- `sqrt`：使用 `sqrt(T)` 作为 patch size。
-- `linspace`：在多个 patch size 上循环实验。
-
-`line_plot` 模式不会使用 patch size，内部会将 patch size 置为 `None`。
-
 ## 融合 Mantis 或 MOMENT
 
 添加 `--mantis` 可拼接 Mantis 表示：
@@ -196,8 +161,6 @@ python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --classifier_type logistic_regression \
   --datasets ucr \
   --dataset_names ECG200 \
@@ -219,8 +182,6 @@ python main.py \
 python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --get_intrinsic_dimension \
   --datasets ucr \
   --dataset_names ECG200 \
@@ -236,8 +197,6 @@ python main.py \
 python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --get_principal_components \
   --datasets ucr \
   --dataset_names ECG200 \
@@ -254,8 +213,6 @@ python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
   --mantis \
   --measure_alignment \
   --datasets ucr \
@@ -275,9 +232,7 @@ python main.py \
 | `--vit_1_name` / `--vit_2_name` | 第一个/第二个视觉骨干模型的 Hugging Face ID 或本地路径 |
 | `--vit_1_layer` / `--vit_2_layer` | 抽取表示的 ViT 层数；不指定时可用于逐层分析 |
 | `--aggregation` | 隐藏表示聚合方式，当前支持 `mean`、`cls_token` |
-| `--image_mode` | 时间序列图像化方式，支持 `line_plot`、`segment`，默认 `line_plot` |
-| `--patch_size` | `segment` 模式下的 patch size 策略，支持 `sqrt`、`linspace` |
-| `--stride` | `segment` 模式下的滑窗步长，表示为 patch size 的比例 |
+| `--image_mode` | 时间序列图像化方式，当前实验使用 `line_plot`，默认值也是 `line_plot` |
 | `--classifier_type` | 分类器类型，支持 `logistic_regression`、`nearest_centroid`、`random_forest` |
 | `--datasets` | benchmark 类型，支持 `ucr`、`uea` |
 | `--dataset_names` | 可选，指定只运行哪些数据集 |
@@ -303,7 +258,7 @@ python main.py \
 常见输出文件：
 
 - `args.json`：本次运行的参数。
-- `train_val.csv`：分类实验结果，包含数据集名、图像模式、patch size、验证准确率和测试准确率。
+- `train_val.csv`：分类实验结果，包含数据集名、图像模式、验证准确率和测试准确率。
 - `splits/<dataset>_seed<seed>_val<ratio>.npz`：从官方训练集划分出的 train/val 索引。
 - `alignment_score.csv`：表示对齐分数。
 - `intrinsic_dimensionality.csv`：逐层 intrinsic dimension。
