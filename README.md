@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # TiViT: Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers
 
 Authors: 
@@ -169,3 +170,7 @@ If you find TiViT useful, please star this repository and cite our work:
 ## Contact
 
 If you have any questions, feel free to contact us: simon.roschmann@tum.de
+=======
+# Tivit_Extension
+基于TiViT和CLIP-ViT-H的时间序列图像化实验扩展，支持热力图与折线图输入，用于UCR/UEA数据集分类对比。
+>>>>>>> 412c1df0a3e03e66213082d963a89f07ca72ffd5
