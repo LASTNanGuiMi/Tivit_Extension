@@ -1,86 +1,109 @@
-<<<<<<< HEAD
-# TiViT: Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers
+# TiViT Extension
 
-Authors: 
-[Simon Roschmann](https://www.eml-munich.de/people/simon-roschmann), 
-[Quentin Bouniot](https://qbouniot.github.io/), 
-[Vasilii Feofanov](https://vfeofanov.github.io/), 
-[Ievgen Redko](https://ievred.github.io/),
-[Zeynep Akata](https://www.eml-munich.de/people/zeynep-akata)
+基于 TiViT 的时间序列分类实验扩展。本仓库将 UCR/UEA 时间序列样本转换为图像，再使用冻结的预训练 Vision Transformer 提取表示，并在这些表示上训练轻量分类器。项目也支持将 TiViT 表示与 Mantis、MOMENT 等时间序列基础模型表示拼接，用于分类、表示对齐和表示结构分析。
 
-[![preprint](https://img.shields.io/static/v1?label=arXiv&message=2506.08641&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2506.08641)
+当前实现支持两种时间序列图像化方式：
 
-## Abstract
+- `line_plot`：默认方式，将每个通道绘制为 224x224 折线图。
+- `segment`：将时间序列切成二维灰度片段后送入 ViT。
 
-Time series classification is a fundamental task in healthcare and industry, yet the development of time series foundation models (TSFMs) remains limited by the scarcity of publicly available time series datasets. In this work, we propose **Ti**me **Vi**sion **T**ransformer (**TiViT**), a framework that converts time series into images to leverage the representational power of frozen Vision Transformers (ViTs) pretrained on large-scale image datasets. First, we theoretically motivate our approach by analyzing the 2D patching of ViTs for time series, showing that it can increase the number of label-relevant tokens and reduce the sample complexity. Second, we empirically demonstrate that TiViT achieves state-of-the-art performance on standard time series classification benchmarks by utilizing the hidden representations of large OpenCLIP models. We explore the structure of TiViT representations and find that intermediate layers with high intrinsic dimension are the most effective for time series classification. Finally, we assess the alignment between TiViT and TSFM representation spaces and identify a strong complementarity, with further performance gains achieved by combining their features. Our findings reveal a new direction for reusing vision representations in a non-visual domain.
+## 项目结构
 
-## Methodology
+```text
+.
+├── main.py                         # 实验入口
+├── requirements.txt                # Python 依赖
+├── assets/methodology.svg          # TiViT 方法示意图
+├── src/
+│   ├── arguments.py                # 命令行参数
+│   ├── datautils.py                # UCR/UEA 数据加载与预处理
+│   ├── tivit.py                    # 时间序列到图像转换与 ViT 表示提取
+│   ├── embedding.py                # TiViT/Mantis/MOMENT 表示抽取与拼接
+│   ├── classifier.py               # 线性分类与传统分类器
+│   ├── analysis.py                 # intrinsic dimension、PCA、alignment 分析
+│   ├── mutual_knn.py               # mutual k-NN 对齐指标
+│   └── utils.py                    # 随机种子、切分、结果写入等工具
+└── scripts/
+    ├── run_lineplot_ucr.sh         # UCR 折线图模式示例
+    ├── run_lineplot_uea.sh         # UEA 折线图模式示例
+    ├── check_ts_file.py            # 检查 .ts 数据格式
+    └── repair_ts_labels.py         # 修复标签分隔符异常的 .ts 文件
+```
+
+## 方法概览
 
 ![TiViT architecture](assets/methodology.svg)
 
-Illustration of TiViT on a time series sample from [ECG200](https://www.timeseriesclassification.com/description.php?Dataset=ECG200). By default, each time series is rendered as a line plot image before being fed into a frozen ViT pretrained on large-scale image datasets. The original segmented grayscale representation is still available with `--image_mode segment`. We average the hidden representations from a specific layer and pass them to a learnable classification head. Combining the representations of TiViT and TSFMs such as Mantis further improves classification accuracy.
+TiViT 的核心流程是：
 
-## Dependencies
-This repository works with Python 3.11 and PyTorch 2.7. Please create a conda environment and install the dependencies specified in [`requirements.txt`](requirements.txt).
+1. 从 UCR 或 UEA benchmark 加载时间序列数据。
+2. 对时间序列做必要的缺失值插值、补齐和标准化。
+3. 将每个时间序列通道转换为图像。
+4. 使用冻结的 ViT、CLIP、DINOv2、SigLIP 2 或 MAE 模型抽取隐藏层表示。
+5. 对隐藏表示做 `mean` 或 `cls_token` 聚合。
+6. 使用 `logistic_regression`、`nearest_centroid` 或 `random_forest` 分类器评估分类准确率。
+
+多通道时间序列会逐通道提取表示，并在特征维度上拼接。
+
+## 环境安装
+
+建议使用 Python 3.11。依赖中包含来自 GitHub 的 `mantis-tsfm` 和 `momentfm`，首次安装通常需要联网。
+
 ```bash
 conda create -n tivit_env python=3.11
 conda activate tivit_env
 python -m pip install -r requirements.txt
 ```
 
-## Datasets
+主要依赖包括：
 
-We evaluate TiViT on the [UCR and UEA benchmark](https://www.timeseriesclassification.com/) for time series classification. The benchmark datasets can be loaded via the [aeon](https://www.aeon-toolkit.org) toolkit. For UCR datasets, we apply by default linear interpolation to handle missing values and use padding to accommodate unequal time series lengths. To use the preprocessing functionality provided by Aeon instead, add the `--aeon` flag.
+- `torch==2.7.1`
+- `torchvision==0.22.1`
+- `aeon==1.2.0`
+- `open_clip_torch==2.32.0`
+- `transformers==4.53.0`
+- `scikit-learn==1.6.1`
+- `dadapy==0.3.3`
 
-For controlled comparisons with DMMV, the official UCR/UEA train and test splits are kept unchanged. A validation set is sampled from the official training split with `--val_ratio` and `--random_seed`. The actual train/validation indices are saved under `result_dir/splits/` for reproducibility and cross-model checking.
+## 数据准备
 
-## Models
+项目通过 `aeon.datasets.load_classification` 读取 UCR/UEA 数据。代码会在 `--data_dir` 下按 benchmark 名称组织数据：
 
-### Time Vision Transformer (TiViT)
-
-In our study, we evaluate TiViT with various ViT backbones, as summarized in the following table. These ViTs cover a wide range of pretraining paradigms and model sizes in the vision and vision-language domain.
-
-| Model | Paper | Checkpoints |
-|-|-|-|
-| **CLIP** | [Radford et al., 2021](https://arxiv.org/abs/2103.00020); [Cherti et al., 2022](https://arxiv.org/abs/2212.07143) | [ViT-B-16](https://huggingface.co/laion/CLIP-ViT-B-16-laion2B-s34B-b88K), [ViT-B-32](https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K), [ViT-L-14](https://huggingface.co/laion/CLIP-ViT-L-14-laion2B-s32B-b82K), [ViT-H-14](https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K) |
-| **SigLIP 2** | [Tschannen et al., 2025](https://arxiv.org/abs/2502.14786) | [SoViT-400m-14](https://huggingface.co/google/siglip2-so400m-patch14-224) |
-| **DINOv2** | [Oquab et al., 2023](https://arxiv.org/abs/2304.07193) | [ViT-S-14](https://huggingface.co/facebook/dinov2-small), [ViT-B-14](https://huggingface.co/facebook/dinov2-base), [ViT-L-14](https://huggingface.co/facebook/dinov2-large) |
-| **MAE** | [He et al., 2021](https://arxiv.org/abs/2111.06377) | [ViT-B-16](https://huggingface.co/facebook/vit-mae-base), [ViT-L-14](https://huggingface.co/facebook/vit-mae-large), [ViT-H-14](https://huggingface.co/facebook/vit-mae-huge) |
-
-
-### Time Series Foundation Model (TSFM)
-
-We compare and optionally fuse TiViT with two state-of-the-art TSFMs exclusively pretrained on time series.
-
-- **Mantis** ([Paper](https://arxiv.org/abs/2502.15637), [Checkpoint](https://huggingface.co/paris-noah/Mantis-8M)): Transformer model (8 M parameters) pretrained on 2 million time series with contrastive learning
-- **MOMENT** ([Paper](https://arxiv.org/abs/2402.03885), [Checkpoint](https://huggingface.co/AutonLab/MOMENT-1-base)): Transformer models pretrained on 13 million time series with masked modeling. There exist three different sizes: Small (40 M parameters), Base (125 M parameters), Large (385 M parameters).
-
-## Classification
-
-Below is an example command to perform classification with TiViT on the UCR benchmark using hidden representations from layer 14 of an OpenCLIP ViT-H model:
-
-```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --vit_1_layer 14 --aggregation mean --patch_size sqrt --stride 0.1 --classifier_type logistic_regression --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+```text
+<data_dir>/
+├── UCR/
+└── UEA/
 ```
 
-The default image conversion is `--image_mode line_plot`. Use `--image_mode segment` to reproduce the original 2D segmented grayscale input.
+运行时用 `--datasets ucr` 或 `--datasets uea` 指定 benchmark。可以用 `--dataset_names` 限制只跑部分数据集。
 
-Check out [`arguments.py`](./src/arguments.py) for a comprehensive overview of all configurable parameters.
-To further improve classification accuracy, we propose to concatenate the representations of TiViT and traditional TSFMs by adding:
+默认情况下，UCR 数据会经过以下处理：
 
-- `--mantis`
-- `--moment [small | base | large]`
+- 变长序列补齐到同一长度。
+- 缺失值线性插值。
+- 使用训练集均值和标准差做标准化。
 
-### Controlled DMMV Comparison
+如果希望使用 aeon 自带的预处理方式，可以添加 `--aeon`。
 
-Use `--dataset_names` to restrict a run to specific datasets within the selected benchmark. The DMMV comparison setting uses:
+## 模型准备
 
-- Random seed: `2021`
-- Validation ratio: `0.2`
-- UCR datasets: `ECG200`, `FordA`
-- UEA datasets: `BasicMotions`, `SelfRegulationSCP1`
+`--vit_1_name` 和 `--vit_2_name` 可以传入 Hugging Face 模型 ID 或本地模型目录。当前代码支持：
 
-Run the UCR datasets:
+- OpenCLIP LAION CLIP：`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`、`laion/CLIP-ViT-B-16-laion2B-s34B-b88K`、`laion/CLIP-ViT-L-14-laion2B-s32B-b82K`、`laion/CLIP-ViT-H-14-laion2B-s32B-b79K`
+- DINOv2：`facebook/dinov2-small`、`facebook/dinov2-base`、`facebook/dinov2-large`
+- SigLIP 2：`google/siglip2-so400m-patch14-224`
+- MAE：`facebook/vit-mae-base`、`facebook/vit-mae-large`、`facebook/vit-mae-huge`
+
+如果使用本地 OpenCLIP 模型目录，目录中需要包含 `.safetensors`、`.bin`、`.pt` 或 `.pth` 权重文件。脚本示例默认开启离线模式：
+
+```bash
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+```
+
+## 快速运行
+
+下面示例使用 CLIP ViT-H 第 14 层、折线图输入和逻辑回归分类器，在 UCR 的 `ECG200` 与 `FordA` 上运行：
 
 ```bash
 python main.py \
@@ -92,13 +115,14 @@ python main.py \
   --classifier_type logistic_regression \
   --datasets ucr \
   --dataset_names ECG200 FordA \
-  --data_dir /path/to/your/data \
-  --result_dir /path/to/save/results \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
   --random_seed 2021 \
-  --val_ratio 0.2
+  --val_ratio 0.2 \
+  --image_mode line_plot
 ```
 
-Run the UEA datasets:
+UEA 示例：
 
 ```bash
 python main.py \
@@ -110,53 +134,212 @@ python main.py \
   --classifier_type logistic_regression \
   --datasets uea \
   --dataset_names BasicMotions SelfRegulationSCP1 \
-  --data_dir /path/to/your/data \
-  --result_dir /path/to/save/results \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
+  --random_seed 2021 \
+  --val_ratio 0.2 \
+  --image_mode line_plot
+```
+
+仓库中也提供了两个 bash 脚本：
+
+```bash
+bash scripts/run_lineplot_ucr.sh
+bash scripts/run_lineplot_uea.sh
+```
+
+可通过环境变量覆盖脚本中的路径和数据集：
+
+```bash
+PROJECT_DIR=/path/to/TiViT_Extension \
+MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K \
+DATA_DIR=/path/to/dataset \
+RESULT_DIR=/path/to/results \
+DATASETS="ECG200 FordA" \
+bash scripts/run_lineplot_ucr.sh
+```
+
+## 使用 segment 图像模式
+
+`segment` 模式会将一维序列切成二维灰度图。此时 `--patch_size` 和 `--stride` 会参与切分：
+
+```bash
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --patch_size sqrt \
+  --stride 0.1 \
+  --classifier_type logistic_regression \
+  --datasets ucr \
+  --dataset_names ECG200 \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
+  --random_seed 2021 \
+  --val_ratio 0.2 \
+  --image_mode segment
+```
+
+`--patch_size` 支持：
+
+- `sqrt`：使用 `sqrt(T)` 作为 patch size。
+- `linspace`：在多个 patch size 上循环实验。
+
+`line_plot` 模式不会使用 patch size，内部会将 patch size 置为 `None`。
+
+## 融合 Mantis 或 MOMENT
+
+添加 `--mantis` 可拼接 Mantis 表示：
+
+```bash
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --patch_size sqrt \
+  --stride 0.1 \
+  --classifier_type logistic_regression \
+  --datasets ucr \
+  --dataset_names ECG200 \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
+  --random_seed 2021 \
+  --val_ratio 0.2 \
+  --image_mode line_plot \
+  --mantis
+```
+
+添加 `--moment small`、`--moment base` 或 `--moment large` 可拼接 MOMENT 表示。
+
+## 表示分析
+
+计算 intrinsic dimension：
+
+```bash
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --aggregation mean \
+  --patch_size sqrt \
+  --stride 0.1 \
+  --get_intrinsic_dimension \
+  --datasets ucr \
+  --dataset_names ECG200 \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
   --random_seed 2021 \
   --val_ratio 0.2
 ```
 
-Each run writes `args.json`, `train_val.csv`, and split files such as `splits/ECG200_seed2021_val0.2.npz`. The split files contain `train_indices` and `val_indices` sampled from the official training split.
-
-
-The following table summarizes the linear classification accuracy of TiViT and TSFMs on the UCR and UEA benchmark.
-
-| Model | UCR | UEA |
-| - | - | - |
-| Moment | 79.0 | 69.9 |
-| Mantis | 80.1 | 72.4 |
-| TiViT *(Ours)* | 81.3 | 72.0 |
-| TiViT + Moment *(Ours)*  | 82.5 | 72.6 |
-| TiViT + Mantis *(Ours)* | 83.0 | 73.7 |
-
-## Intrinsic Dimension and Principal Components
-
-To better understand the hidden representations of ViTs, we analyze how their structure evolves across layers. Use the following command to compute the intrinsic dimension of representations from CLIP ViT-H:
+计算覆盖 95% 方差所需的主成分数量：
 
 ```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --aggregation mean --patch_size sqrt --stride 0.1 --get_intrinsic_dimension --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --aggregation mean \
+  --patch_size sqrt \
+  --stride 0.1 \
+  --get_principal_components \
+  --datasets ucr \
+  --dataset_names ECG200 \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
+  --random_seed 2021 \
+  --val_ratio 0.2
 ```
 
-Alternatively, you may compute the number of principal components necessary to cover 95\% of the variance in the representations by setting the flag `--get_principal_components`.
-
-## Alignment
-
-The alignment of representations from CLIP ViT-H (layer 14) and Mantis on the UCR benchmark can be measured using the mutual k-NN metric.
+测量两个模型表示空间的 mutual k-NN 对齐分数：
 
 ```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --vit_1_layer 14 --aggregation mean --patch_size sqrt --stride 0.1 --mantis --measure_alignment --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --patch_size sqrt \
+  --stride 0.1 \
+  --mantis \
+  --measure_alignment \
+  --datasets ucr \
+  --dataset_names ECG200 \
+  --data_dir /path/to/dataset \
+  --result_dir /path/to/results \
+  --random_seed 2021 \
+  --val_ratio 0.2
 ```
 
-You may specify different ViTs (`--vit_1_name`, `--vit_2_name`) and/or TSFMs (`--mantis`, `--moment`). Note that the alignment score can only be computed between two models at a time.
+对齐分析一次只能包含两个模型表示。
 
-## Acknowledgments
+## 常用参数
 
-We appreciate the following repositories for their valuable code:
-- [The Platonic Representation Hypothesis](https://github.com/minyoungg/platonic-rep/): for assessing model alignment via the mutual k-NN metric
-- [DADApy](https://github.com/sissa-data-science/DADApy): for computing the intrinsic dimension of representations
+| 参数 | 说明 |
+| --- | --- |
+| `--vit_1_name` / `--vit_2_name` | 第一个/第二个视觉骨干模型的 Hugging Face ID 或本地路径 |
+| `--vit_1_layer` / `--vit_2_layer` | 抽取表示的 ViT 层数；不指定时可用于逐层分析 |
+| `--aggregation` | 隐藏表示聚合方式，当前支持 `mean`、`cls_token` |
+| `--image_mode` | 时间序列图像化方式，支持 `line_plot`、`segment`，默认 `line_plot` |
+| `--patch_size` | `segment` 模式下的 patch size 策略，支持 `sqrt`、`linspace` |
+| `--stride` | `segment` 模式下的滑窗步长，表示为 patch size 的比例 |
+| `--classifier_type` | 分类器类型，支持 `logistic_regression`、`nearest_centroid`、`random_forest` |
+| `--datasets` | benchmark 类型，支持 `ucr`、`uea` |
+| `--dataset_names` | 可选，指定只运行哪些数据集 |
+| `--batch_size` | dataloader batch size，默认 `128` |
+| `--data_dir` | 数据目录，必填 |
+| `--result_dir` | 结果输出目录，必填 |
+| `--random_seed` | 随机种子 |
+| `--val_ratio` | 从官方训练集划分验证集的比例，默认 `0.2` |
+| `--mantis` | 启用 Mantis 表示 |
+| `--moment` | 启用 MOMENT 表示，取值 `small`、`base`、`large` |
+| `--measure_alignment` | 计算两个模型表示的 mutual k-NN 对齐分数 |
+| `--get_intrinsic_dimension` | 计算表示的 intrinsic dimension |
+| `--get_principal_components` | 计算覆盖 95% 方差所需主成分数量 |
 
-## Citation
-If you find TiViT useful, please star this repository and cite our work:
+## 输出结果
+
+每次运行会在 `--result_dir` 下创建一个带时间戳的子目录：
+
+```text
+<result_dir>/<timestamp>_<datasets>_<models>_<classifier_type>/
+```
+
+常见输出文件：
+
+- `args.json`：本次运行的参数。
+- `train_val.csv`：分类实验结果，包含数据集名、图像模式、patch size、验证准确率和测试准确率。
+- `splits/<dataset>_seed<seed>_val<ratio>.npz`：从官方训练集划分出的 train/val 索引。
+- `alignment_score.csv`：表示对齐分数。
+- `intrinsic_dimensionality.csv`：逐层 intrinsic dimension。
+- `principal_components.csv`：逐层 PCA 主成分数量。
+
+## 数据格式辅助脚本
+
+检查 `.ts` 文件格式：
+
+```bash
+python scripts/check_ts_file.py /path/to/file.ts
+```
+
+修复部分 `.ts` 文件中“标签被逗号分隔而不是冒号分隔”的问题：
+
+```bash
+python scripts/repair_ts_labels.py /path/to/file.ts
+```
+
+默认会输出 `<input>.fixed.ts`。如需原地替换并生成备份：
+
+```bash
+python scripts/repair_ts_labels.py /path/to/file.ts --in-place
+```
+
+## 注意事项
+
+- `main.py` 会自动选择 `cuda` 或 `cpu`，大模型建议使用 GPU。
+- 首次使用在线 Hugging Face 模型时，需要联网下载权重。
+- 使用离线模型时，确保模型路径和权重文件完整。
+- `--classifier_type`、`--measure_alignment`、`--get_intrinsic_dimension`、`--get_principal_components` 代表不同任务类型，一次运行通常选择其中一种。
+- `--random_seed` 建议显式指定，否则部分依赖随机种子的逻辑可能不可复现。
+
+## 上游论文与引用
+
+本项目基于 TiViT：
 
 ```bibtex
 @article{roschmann2025tivit,
@@ -167,10 +350,8 @@ If you find TiViT useful, please star this repository and cite our work:
 }
 ```
 
-## Contact
+相关资源：
 
-If you have any questions, feel free to contact us: simon.roschmann@tum.de
-=======
-# Tivit_Extension
-基于TiViT和CLIP-ViT-H的时间序列图像化实验扩展，支持热力图与折线图输入，用于UCR/UEA数据集分类对比。
->>>>>>> 412c1df0a3e03e66213082d963a89f07ca72ffd5
+- TiViT 论文：https://arxiv.org/abs/2506.08641
+- UCR/UEA benchmark：https://www.timeseriesclassification.com/
+- aeon：https://www.aeon-toolkit.org/
