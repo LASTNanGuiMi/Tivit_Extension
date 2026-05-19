@@ -2,6 +2,10 @@
 
 本项目是基于 TiViT 的时间序列图像化分类实验扩展，核心关注点是：**将一维或多维时间序列渲染成折线图图像，再输入预训练视觉 Transformer 提取表示，用于 UCR/UEA 时间序列分类对比**。
 
+通过网盘分享的文件：dataset
+
+链接: https://pan.baidu.com/s/1ydgwTojNom_kKigBZXd54w?pwd=1234 提取码: 1234
+
 当前默认输入形式是折线图：
 
 ```bash
@@ -20,7 +24,7 @@
 
 ## 方法概览
 
-![TiViT architecture](assets/methodology.svg)
+![Plot](D:/HDMI/TiViT_Exension/img/Plot.png)
 
 折线图模式的流程如下：
 
