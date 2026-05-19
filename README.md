@@ -1,94 +1,119 @@
-<<<<<<< HEAD
-# TiViT: Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers
+# Tivit_Extension
 
-Authors: 
-[Simon Roschmann](https://www.eml-munich.de/people/simon-roschmann), 
-[Quentin Bouniot](https://qbouniot.github.io/), 
-[Vasilii Feofanov](https://vfeofanov.github.io/), 
-[Ievgen Redko](https://ievred.github.io/),
-[Zeynep Akata](https://www.eml-munich.de/people/zeynep-akata)
+本项目是基于 TiViT 的时间序列图像化分类实验扩展，核心关注点是：**将一维或多维时间序列渲染成折线图图像，再输入预训练视觉 Transformer 提取表示，用于 UCR/UEA 时间序列分类对比**。
 
-[![preprint](https://img.shields.io/static/v1?label=arXiv&message=2506.08641&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2506.08641)
+当前默认输入形式是折线图：
 
-## Abstract
+```bash
+--image_mode line_plot
+```
 
-Time series classification is a fundamental task in healthcare and industry, yet the development of time series foundation models (TSFMs) remains limited by the scarcity of publicly available time series datasets. In this work, we propose **Ti**me **Vi**sion **T**ransformer (**TiViT**), a framework that converts time series into images to leverage the representational power of frozen Vision Transformers (ViTs) pretrained on large-scale image datasets. First, we theoretically motivate our approach by analyzing the 2D patching of ViTs for time series, showing that it can increase the number of label-relevant tokens and reduce the sample complexity. Second, we empirically demonstrate that TiViT achieves state-of-the-art performance on standard time series classification benchmarks by utilizing the hidden representations of large OpenCLIP models. We explore the structure of TiViT representations and find that intermediate layers with high intrinsic dimension are the most effective for time series classification. Finally, we assess the alignment between TiViT and TSFM representation spaces and identify a strong complementarity, with further performance gains achieved by combining their features. Our findings reveal a new direction for reusing vision representations in a non-visual domain.
+原始的分段灰度图表示仍然保留，可通过 `--image_mode segment` 启用，主要用于和原 TiViT 方案做对照。
 
-## Methodology
+## 项目亮点
+
+- **折线图优先**：默认把每条时间序列转换为 224 x 224 的白底黑线图像，更贴近人类查看时间序列的方式。
+- **支持多通道时间序列**：多变量数据会按通道分别绘制折线图，再分别送入视觉骨干网络提取特征。
+- **复用大规模视觉模型**：支持 CLIP/OpenCLIP、DINOv2、SigLIP 2、MAE 等预训练 ViT。
+- **可与 TSFM 融合**：支持拼接 Mantis、MOMENT 等时间序列基础模型表示，观察视觉表示与时间序列表示的互补性。
+- **保留可复现实验设置**：使用官方 UCR/UEA train/test split，并将验证集划分索引保存到结果目录。
+
+## 方法概览
 
 ![TiViT architecture](assets/methodology.svg)
 
-Illustration of TiViT on a time series sample from [ECG200](https://www.timeseriesclassification.com/description.php?Dataset=ECG200). By default, each time series is rendered as a line plot image before being fed into a frozen ViT pretrained on large-scale image datasets. The original segmented grayscale representation is still available with `--image_mode segment`. We average the hidden representations from a specific layer and pass them to a learnable classification head. Combining the representations of TiViT and TSFMs such as Mantis further improves classification accuracy.
+折线图模式的流程如下：
 
-## Dependencies
-This repository works with Python 3.11 and PyTorch 2.7. Please create a conda environment and install the dependencies specified in [`requirements.txt`](requirements.txt).
+1. 读取 UCR 或 UEA 时间序列数据。
+2. 对每条序列做 robust scaling，减弱异常值和尺度差异的影响。
+3. 将序列值归一化到图像坐标，并插值到固定宽度。
+4. 渲染为白底黑线的 RGB 图像。
+5. 输入冻结的 ViT/CLIP-ViT，在指定层提取 hidden representation。
+6. 对 token 表示做 `mean` 或 `cls_token` 聚合。
+7. 使用 logistic regression、nearest centroid 或 random forest 完成分类。
+
+折线图转换实现位于 [src/tivit.py](src/tivit.py)，核心参数是 `--image_mode line_plot`。
+
+## 环境安装
+
+建议使用 Python 3.11。
+
 ```bash
 conda create -n tivit_env python=3.11
 conda activate tivit_env
 python -m pip install -r requirements.txt
 ```
 
-## Datasets
+## 数据集
 
-We evaluate TiViT on the [UCR and UEA benchmark](https://www.timeseriesclassification.com/) for time series classification. The benchmark datasets can be loaded via the [aeon](https://www.aeon-toolkit.org) toolkit. For UCR datasets, we apply by default linear interpolation to handle missing values and use padding to accommodate unequal time series lengths. To use the preprocessing functionality provided by Aeon instead, add the `--aeon` flag.
+项目面向 [UCR/UEA time series classification benchmark](https://www.timeseriesclassification.com/)。
 
-For controlled comparisons with DMMV, the official UCR/UEA train and test splits are kept unchanged. A validation set is sampled from the official training split with `--val_ratio` and `--random_seed`. The actual train/validation indices are saved under `result_dir/splits/` for reproducibility and cross-model checking.
+数据可通过 [aeon](https://www.aeon-toolkit.org) 加载。默认流程会：
 
-## Models
+- 对 UCR 数据中的缺失值做线性插值；
+- 对不等长序列做 padding；
+- 从官方训练集里按 `--val_ratio` 划分验证集；
+- 将实际 train/validation 索引写入 `result_dir/splits/`，方便复现和跨模型比较。
 
-### Time Vision Transformer (TiViT)
-
-In our study, we evaluate TiViT with various ViT backbones, as summarized in the following table. These ViTs cover a wide range of pretraining paradigms and model sizes in the vision and vision-language domain.
-
-| Model | Paper | Checkpoints |
-|-|-|-|
-| **CLIP** | [Radford et al., 2021](https://arxiv.org/abs/2103.00020); [Cherti et al., 2022](https://arxiv.org/abs/2212.07143) | [ViT-B-16](https://huggingface.co/laion/CLIP-ViT-B-16-laion2B-s34B-b88K), [ViT-B-32](https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K), [ViT-L-14](https://huggingface.co/laion/CLIP-ViT-L-14-laion2B-s32B-b82K), [ViT-H-14](https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K) |
-| **SigLIP 2** | [Tschannen et al., 2025](https://arxiv.org/abs/2502.14786) | [SoViT-400m-14](https://huggingface.co/google/siglip2-so400m-patch14-224) |
-| **DINOv2** | [Oquab et al., 2023](https://arxiv.org/abs/2304.07193) | [ViT-S-14](https://huggingface.co/facebook/dinov2-small), [ViT-B-14](https://huggingface.co/facebook/dinov2-base), [ViT-L-14](https://huggingface.co/facebook/dinov2-large) |
-| **MAE** | [He et al., 2021](https://arxiv.org/abs/2111.06377) | [ViT-B-16](https://huggingface.co/facebook/vit-mae-base), [ViT-L-14](https://huggingface.co/facebook/vit-mae-large), [ViT-H-14](https://huggingface.co/facebook/vit-mae-huge) |
-
-
-### Time Series Foundation Model (TSFM)
-
-We compare and optionally fuse TiViT with two state-of-the-art TSFMs exclusively pretrained on time series.
-
-- **Mantis** ([Paper](https://arxiv.org/abs/2502.15637), [Checkpoint](https://huggingface.co/paris-noah/Mantis-8M)): Transformer model (8 M parameters) pretrained on 2 million time series with contrastive learning
-- **MOMENT** ([Paper](https://arxiv.org/abs/2402.03885), [Checkpoint](https://huggingface.co/AutonLab/MOMENT-1-base)): Transformer models pretrained on 13 million time series with masked modeling. There exist three different sizes: Small (40 M parameters), Base (125 M parameters), Large (385 M parameters).
-
-## Classification
-
-Below is an example command to perform classification with TiViT on the UCR benchmark using hidden representations from layer 14 of an OpenCLIP ViT-H model:
+如需使用 aeon 自带预处理，可添加：
 
 ```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --vit_1_layer 14 --aggregation mean --patch_size sqrt --stride 0.1 --classifier_type logistic_regression --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+--aeon
 ```
 
-The default image conversion is `--image_mode line_plot`. Use `--image_mode segment` to reproduce the original 2D segmented grayscale input.
+## 支持的视觉骨干
 
-Check out [`arguments.py`](./src/arguments.py) for a comprehensive overview of all configurable parameters.
-To further improve classification accuracy, we propose to concatenate the representations of TiViT and traditional TSFMs by adding:
+| 类型 | 示例 checkpoint |
+| --- | --- |
+| CLIP/OpenCLIP | `laion/CLIP-ViT-H-14-laion2B-s32B-b79K` |
+| DINOv2 | `facebook/dinov2-base` |
+| SigLIP 2 | `google/siglip2-so400m-patch14-224` |
+| MAE | `facebook/vit-mae-base` |
 
-- `--mantis`
-- `--moment [small | base | large]`
+其中 CLIP-ViT-H 是当前折线图实验中推荐优先使用的骨干。
 
-### Controlled DMMV Comparison
+## 折线图分类实验
 
-Use `--dataset_names` to restrict a run to specific datasets within the selected benchmark. The DMMV comparison setting uses:
-
-- Random seed: `2021`
-- Validation ratio: `0.2`
-- UCR datasets: `ECG200`, `FordA`
-- UEA datasets: `BasicMotions`, `SelfRegulationSCP1`
-
-Run the UCR datasets:
+下面是在 UCR 数据集上使用 CLIP-ViT-H 折线图输入进行分类的示例：
 
 ```bash
 python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
+  --image_mode line_plot \
+  --classifier_type logistic_regression \
+  --datasets ucr \
+  --data_dir /path/to/your/data \
+  --result_dir /path/to/save/results \
+  --random_seed 2021 \
+  --val_ratio 0.2
+```
+
+说明：
+
+- `--image_mode line_plot` 是默认值，显式写出便于记录实验配置。
+- 折线图模式不需要 `--patch_size`，代码会自动跳过 2D 分段 patch size 搜索。
+- `--vit_1_layer 14` 表示截取 ViT 的第 14 层表示。
+- `--aggregation mean` 表示对 token hidden states 做平均池化。
+
+## 指定数据集运行
+
+可以用 `--dataset_names` 只跑部分数据集。下面是和 DMMV 对比时常用的受控设置：
+
+- random seed: `2021`
+- validation ratio: `0.2`
+- UCR: `ECG200`, `FordA`
+- UEA: `BasicMotions`, `SelfRegulationSCP1`
+
+运行 UCR 折线图实验：
+
+```bash
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --image_mode line_plot \
   --classifier_type logistic_regression \
   --datasets ucr \
   --dataset_names ECG200 FordA \
@@ -98,15 +123,14 @@ python main.py \
   --val_ratio 0.2
 ```
 
-Run the UEA datasets:
+运行 UEA 折线图实验：
 
 ```bash
 python main.py \
   --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --vit_1_layer 14 \
   --aggregation mean \
-  --patch_size sqrt \
-  --stride 0.1 \
+  --image_mode line_plot \
   --classifier_type logistic_regression \
   --datasets uea \
   --dataset_names BasicMotions SelfRegulationSCP1 \
@@ -116,61 +140,88 @@ python main.py \
   --val_ratio 0.2
 ```
 
-Each run writes `args.json`, `train_val.csv`, and split files such as `splits/ECG200_seed2021_val0.2.npz`. The split files contain `train_indices` and `val_indices` sampled from the official training split.
-
-
-The following table summarizes the linear classification accuracy of TiViT and TSFMs on the UCR and UEA benchmark.
-
-| Model | UCR | UEA |
-| - | - | - |
-| Moment | 79.0 | 69.9 |
-| Mantis | 80.1 | 72.4 |
-| TiViT *(Ours)* | 81.3 | 72.0 |
-| TiViT + Moment *(Ours)*  | 82.5 | 72.6 |
-| TiViT + Mantis *(Ours)* | 83.0 | 73.7 |
-
-## Intrinsic Dimension and Principal Components
-
-To better understand the hidden representations of ViTs, we analyze how their structure evolves across layers. Use the following command to compute the intrinsic dimension of representations from CLIP ViT-H:
+项目也提供了脚本入口：
 
 ```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --aggregation mean --patch_size sqrt --stride 0.1 --get_intrinsic_dimension --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+bash scripts/run_lineplot_ucr.sh
+bash scripts/run_lineplot_uea.sh
 ```
 
-Alternatively, you may compute the number of principal components necessary to cover 95\% of the variance in the representations by setting the flag `--get_principal_components`.
+## 与时间序列基础模型融合
 
-## Alignment
-
-The alignment of representations from CLIP ViT-H (layer 14) and Mantis on the UCR benchmark can be measured using the mutual k-NN metric.
+如果希望比较或融合传统时间序列基础模型，可以添加：
 
 ```bash
-python main.py --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K --vit_1_layer 14 --aggregation mean --patch_size sqrt --stride 0.1 --mantis --measure_alignment --datasets ucr --data_dir /path/to/your/data --result_dir /path/to/save/results --random_seed 2021 --val_ratio 0.2
+--mantis
 ```
 
-You may specify different ViTs (`--vit_1_name`, `--vit_2_name`) and/or TSFMs (`--mantis`, `--moment`). Note that the alignment score can only be computed between two models at a time.
+或：
 
-## Acknowledgments
-
-We appreciate the following repositories for their valuable code:
-- [The Platonic Representation Hypothesis](https://github.com/minyoungg/platonic-rep/): for assessing model alignment via the mutual k-NN metric
-- [DADApy](https://github.com/sissa-data-science/DADApy): for computing the intrinsic dimension of representations
-
-## Citation
-If you find TiViT useful, please star this repository and cite our work:
-
-```bibtex
-@article{roschmann2025tivit,
-  title={Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers},
-  author={Simon Roschmann and Quentin Bouniot and Vasilii Feofanov and Ievgen Redko and Zeynep Akata},
-  journal={arXiv preprint arXiv:2506.08641},
-  year={2025}
-}
+```bash
+--moment base
 ```
 
-## Contact
+例如，将折线图 ViT 表示和 Mantis 表示拼接后分类：
 
-If you have any questions, feel free to contact us: simon.roschmann@tum.de
-=======
-# Tivit_Extension
-基于TiViT和CLIP-ViT-H的时间序列图像化实验扩展，支持热力图与折线图输入，用于UCR/UEA数据集分类对比。
->>>>>>> 412c1df0a3e03e66213082d963a89f07ca72ffd5
+```bash
+python main.py \
+  --vit_1_name laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --image_mode line_plot \
+  --mantis \
+  --classifier_type logistic_regression \
+  --datasets ucr \
+  --data_dir /path/to/your/data \
+  --result_dir /path/to/save/results \
+  --random_seed 2021 \
+  --val_ratio 0.2
+```
+
+## 结果文件
+
+每次运行会在 `result_dir` 下新建带时间戳的实验目录，通常包含：
+
+- `args.json`：本次运行的完整参数；
+- `train_val.csv`：各数据集验证集和测试集结果；
+- `splits/*.npz`：从官方训练集划分出的 train/validation 索引。
+
+结果表中会记录 `image_mode`，因此可以直接区分折线图输入和分段灰度图输入。
+
+## 其他分析功能
+
+除了分类，本项目还保留 TiViT 的表示分析功能：
+
+```bash
+--get_intrinsic_dimension
+--get_principal_components
+--measure_alignment
+```
+
+这些功能可用于分析不同 ViT 层的表示结构，以及折线图视觉表示和 Mantis/MOMENT 表示之间的 alignment。
+
+## 主要参数
+
+| 参数 | 作用 |
+| --- | --- |
+| `--image_mode line_plot` | 使用折线图作为视觉输入，当前默认模式 |
+| `--image_mode segment` | 使用原 TiViT 分段灰度图输入 |
+| `--vit_1_name` | 第一个视觉骨干 checkpoint |
+| `--vit_1_layer` | 提取表示的 ViT 层 |
+| `--aggregation` | hidden states 聚合方式，支持 `mean` 和 `cls_token` |
+| `--classifier_type` | 分类器，支持 `logistic_regression`、`nearest_centroid`、`random_forest` |
+| `--datasets` | 选择 `ucr` 或 `uea` |
+| `--dataset_names` | 限定要运行的数据集名称 |
+| `--mantis` | 拼接 Mantis 时间序列表示 |
+| `--moment` | 拼接 MOMENT 表示，支持 `small`、`base`、`large` |
+
+完整参数定义见 [src/arguments.py](src/arguments.py)。
+
+## 致谢
+
+本项目基于 TiViT 思路扩展折线图输入实验，并参考了以下工作：
+
+- TiViT: Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers
+- OpenCLIP / CLIP 视觉骨干
+- Mantis 和 MOMENT 时间序列基础模型
+- aeon 时间序列数据集工具
