@@ -56,6 +56,27 @@ if __name__ == "__main__":
     if args.moment:
         available_models.append(f"moment_{args.moment}")
 
+    has_vision_modality = bool(args.vit_1_name or args.vit_2_name)
+    has_timeseries_modality = bool(args.mantis or args.moment)
+
+    if not has_vision_modality and not has_timeseries_modality:
+        raise ValueError(
+            "At least one modality must be enabled: use a ViT model for line-plot "
+            "vision, or enable --mantis/--moment for raw time-series embeddings."
+        )
+
+    enabled_modalities = []
+    if has_vision_modality:
+        enabled_modalities.append(f"vision:{args.image_mode}")
+    if has_timeseries_modality:
+        ts_models = []
+        if args.mantis:
+            ts_models.append("mantis")
+        if args.moment:
+            ts_models.append(f"moment-{args.moment}")
+        enabled_modalities.append(f"time_series:{'+'.join(ts_models)}")
+    print("Enabled modalities:", ", ".join(enabled_modalities))
+
     available_models = "_".join(available_models)
 
     result_dir = f"{args.result_dir}/{timestamp}_{args.datasets}_{available_models}_{args.classifier_type}"
@@ -101,7 +122,7 @@ if __name__ == "__main__":
         # Embedding with Mantis TSFM
         if args.mantis:
             network = Mantis8M(device=device)
-            network = network.from_pretrained("paris-noah/Mantis-8M")
+            network = network.from_pretrained(args.mantis_name)
             network = network.to(device)
             mantis_trainer = MantisTrainer(device=device, network=network)
 

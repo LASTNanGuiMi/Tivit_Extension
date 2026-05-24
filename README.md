@@ -159,6 +159,19 @@ bash scripts/run_lineplot_uea.sh
 --mantis
 ```
 
+Mantis checkpoint 可以通过 `--mantis_name` 指定，既可以使用 HuggingFace repo id，也可以使用本地 checkpoint 路径：
+
+```bash
+--mantis_name paris-noah/Mantis-8M
+```
+
+服务器无法联网时，可以先在可联网机器下载并上传 HuggingFace cache，然后在服务器上启用离线模式：
+
+```bash
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+```
+
 或：
 
 ```bash
@@ -174,6 +187,7 @@ python main.py \
   --aggregation mean \
   --image_mode line_plot \
   --mantis \
+  --mantis_name paris-noah/Mantis-8M \
   --classifier_type logistic_regression \
   --datasets ucr \
   --data_dir /path/to/your/data \
@@ -224,6 +238,51 @@ python main.py \
 ## 致谢
 
 本项目基于 TiViT 思路扩展折线图输入实验，并参考了以下工作：
+
+## Bimodal line-plot + Mantis results
+
+Current bimodal setup:
+
+- Vision modality: `--image_mode line_plot` with CLIP-ViT-H
+- Time-series modality: `--mantis` with `paris-noah/Mantis-8M`
+- Fusion: concatenate vision embedding and Mantis embedding, then train `logistic_regression`
+- Random seed: `2021`
+- Validation ratio: `0.2`
+
+Verified test accuracy:
+
+| Benchmark | Dataset | Test accuracy |
+| --- | --- | --- |
+| UCR | ECG200 | 0.84 |
+| UCR | FordA | 0.89 |
+| UEA | BasicMotions | 1.00 |
+| UEA | SelfRegulationSCP1 | 0.82 |
+
+UEA reproduction command:
+
+```bash
+cd /home/guoyin/TiViT-main
+
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+python main.py \
+  --vit_1_name /home/guoyin/hf_models/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --vit_1_layer 14 \
+  --aggregation mean \
+  --image_mode line_plot \
+  --mantis \
+  --mantis_name paris-noah/Mantis-8M \
+  --classifier_type logistic_regression \
+  --datasets uea \
+  --dataset_names BasicMotions SelfRegulationSCP1 \
+  --data_dir /home/guoyin/dmmv_extension/dmmv/dmmv/dataset \
+  --result_dir /home/guoyin/TiViT-main/results \
+  --random_seed 2021 \
+  --val_ratio 0.2
+```
+
+## Acknowledgements
 
 - TiViT: Time Series Representations for Classification Lie Hidden in Pretrained Vision Transformers
 - OpenCLIP / CLIP 视觉骨干

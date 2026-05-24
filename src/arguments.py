@@ -49,6 +49,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--mantis_name",
+        type=str,
+        default="paris-noah/Mantis-8M",
+        help="Pretrained weights of Mantis, either a HuggingFace id or a local path",
+    )
+
+    parser.add_argument(
         "--moment",
         type=str,
         choices=["small", "base", "large"],

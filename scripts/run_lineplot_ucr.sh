@@ -3,6 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/home/guoyin/TiViT-main}"
 MODEL_DIR="${MODEL_DIR:-/home/guoyin/hf_models/CLIP-ViT-H-14-laion2B-s32B-b79K}"
+MANTIS_DIR="${MANTIS_DIR:-/home/guoyin/hf_models/Mantis-8M}"
 DATA_DIR="${DATA_DIR:-/home/guoyin/dmmv_extension/dmmv/dmmv/dataset}"
 RESULT_DIR="${RESULT_DIR:-/home/guoyin/TiViT-main/results}"
 DATASETS="${DATASETS:-ECG200 FordA}"
@@ -16,6 +17,8 @@ python main.py \
   --vit_1_name "$MODEL_DIR" \
   --vit_1_layer 14 \
   --aggregation mean \
+  --mantis \
+  --mantis_name "$MANTIS_DIR" \
   --patch_size sqrt \
   --stride 0.1 \
   --classifier_type logistic_regression \
