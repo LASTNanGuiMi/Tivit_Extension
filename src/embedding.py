@@ -10,6 +10,18 @@ def embed(model, dataloader, model_type, channels, device):
 
     for (batch,) in tqdm(dataloader):
 
+        if model_type == "tivit" and getattr(model, "image_mode", None) in {
+            "line_plot",
+            "activity_graph",
+        }:
+            with torch.no_grad():
+                batch = batch.to(device)
+                outputs = model(batch).cpu().numpy()
+
+            batch_embeds.append(outputs)
+            torch.cuda.empty_cache()
+            continue
+
         batch_embeds_dim = []
 
         for dim in range(channels):

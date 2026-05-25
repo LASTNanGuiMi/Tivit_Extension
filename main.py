@@ -93,8 +93,10 @@ if __name__ == "__main__":
         datasets = univariate
     elif args.datasets == "uea":
         datasets = multivariate
+    elif args.datasets == "uci":
+        datasets = ["UCIHAR"]
     else:
-        raise ValueError(f"Only UCR and UEA benchmark available.")
+        raise ValueError(f"Only UCR, UEA, and UCI benchmark available.")
 
     if args.dataset_names:
         unavailable = sorted(set(args.dataset_names) - set(datasets))
@@ -147,7 +149,7 @@ if __name__ == "__main__":
             )
 
         patch_sizes = get_patch_size(patch_size=args.patch_size, T=T)
-        if args.image_mode == "line_plot":
+        if args.image_mode in {"line_plot", "activity_graph"}:
             patch_sizes = [None]
 
         for p in patch_sizes:

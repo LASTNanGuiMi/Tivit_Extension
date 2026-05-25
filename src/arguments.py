@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument(
         "--image_mode",
         type=str,
-        choices=["line_plot", "segment"],
+        choices=["line_plot", "activity_graph", "segment"],
         default="line_plot",
         help="How to convert each time series into an image for the vision backbone",
     )
@@ -103,7 +103,7 @@ def parse_args():
     parser.add_argument(
         "--datasets",
         type=str,
-        choices=["ucr", "uea"],
+        choices=["ucr", "uea", "uci"],
         help="Time series classification benchmark",
     )
 

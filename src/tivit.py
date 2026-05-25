@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import os
 
 import einops
+import numpy as np
 import open_clip
 import torch
 import torch.nn as nn
@@ -24,6 +25,129 @@ OPENCLIP_LAION_MODELS = {
     "clip-vit-l-14-laion2b-s32b-b82k": ("ViT-L-14", "laion2b_s32b_b82k"),
     "clip-vit-h-14-laion2b-s32b-b79k": ("ViT-H-14", "laion2b_s32b_b79k"),
 }
+
+
+def get_optimal_order(n):
+    if n < 0:
+        raise ValueError(f"Number of signal channels must be non-negative, got {n}.")
+    if n <= 1:
+        return list(range(n))
+
+    total_pairs = n * (n - 1) // 2
+    visited_pairs = set()
+    id_list = [0]
+
+    while len(visited_pairs) < total_pairs:
+        current = id_list[-1]
+        next_id = None
+
+        for candidate in range(n):
+            if candidate == current:
+                continue
+            pair = tuple(sorted((current, candidate)))
+            if pair not in visited_pairs:
+                next_id = candidate
+                break
+
+        if next_id is None:
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if (i, j) not in visited_pairs:
+                        next_id = i if current != i else j
+                        break
+                if next_id is not None:
+                    break
+
+        pair = tuple(sorted((current, next_id)))
+        visited_pairs.add(pair)
+        id_list.append(next_id)
+
+    return id_list
+
+
+def build_single_column_graph(signals, id_list):
+    signals = np.asarray(signals)
+    if signals.ndim != 2:
+        raise ValueError(f"signals must have shape (n, T), got {signals.shape}.")
+
+    return signals[np.asarray(id_list, dtype=np.int64)]
+
+
+def build_multicolumn_graph(signals, id_list):
+    signals = np.asarray(signals)
+    if signals.ndim != 2:
+        raise ValueError(f"signals must have shape (n, T), got {signals.shape}.")
+
+    rows = []
+    for k, signal_id in enumerate(id_list):
+        left = signals[id_list[k - 1]]
+        center = signals[signal_id]
+        right = signals[id_list[(k + 1) % len(id_list)]]
+        rows.append(np.concatenate([left, center, right], axis=0))
+
+    return np.stack(rows, axis=0)
+
+
+def generate_activity_graph(signals, mode="multicolumn", id_list=None):
+    signals = np.asarray(signals)
+    if signals.ndim != 2:
+        raise ValueError(f"signals must have shape (n, T), got {signals.shape}.")
+
+    if id_list is None:
+        id_list = get_optimal_order(signals.shape[0])
+
+    if mode == "single_column":
+        return build_single_column_graph(signals, id_list)
+    if mode == "multicolumn":
+        return build_multicolumn_graph(signals, id_list)
+
+    raise ValueError(f"Unsupported activity graph mode {mode}.")
+
+
+def preprocess_graph(signals, mode="multicolumn", img_size=224):
+    """
+    signals: np.ndarray, shape (n, T), or torch.Tensor, shape (B, n, T)
+    returns: torch.Tensor, shape (B, 3, img_size, img_size)
+    """
+    device = signals.device if torch.is_tensor(signals) else None
+    dtype = signals.dtype if torch.is_tensor(signals) else torch.float32
+
+    if torch.is_tensor(signals):
+        signals_np = signals.detach().cpu().numpy()
+    else:
+        signals_np = np.asarray(signals)
+
+    if signals_np.ndim == 2:
+        signals_np = signals_np[None, ...]
+    elif signals_np.ndim != 3:
+        raise ValueError(f"signals must have shape (n, T) or (B, n, T), got {signals_np.shape}.")
+
+    graphs = []
+    order_cache = {}
+    for sample in signals_np:
+        n = sample.shape[0]
+        id_list = order_cache.setdefault(n, get_optimal_order(n))
+        graph = generate_activity_graph(sample, mode=mode, id_list=id_list).astype(
+            np.float32, copy=False
+        )
+        graph_min = graph.min()
+        graph_max = graph.max()
+        graph = (graph - graph_min) / (graph_max - graph_min + 1e-8)
+        graphs.append(graph)
+
+    graph_tensor = torch.from_numpy(np.stack(graphs, axis=0)).unsqueeze(1)
+    graph_tensor = F.interpolate(
+        graph_tensor,
+        size=(img_size, img_size),
+        mode="bilinear",
+        align_corners=False,
+    )
+    graph_tensor = graph_tensor.repeat(1, 3, 1, 1)
+
+    if device is not None:
+        graph_tensor = graph_tensor.to(device=device, dtype=dtype)
+
+    return graph_tensor
 
 
 def get_openclip_config(model_name):
@@ -155,8 +279,8 @@ class BaseTiViT(nn.Module, ABC):
         pass
 
     def forward(self, inputs):
-        if self.image_mode == "line_plot":
-            inputs = self.ts2line_plot_transformation(inputs)
+        if self.image_mode in {"line_plot", "activity_graph"}:
+            inputs = preprocess_graph(inputs, mode="multicolumn")
         elif self.image_mode == "segment":
             inputs = self.ts2image_transformation(
                 inputs, patch_size=self.patch_size, stride=self.stride

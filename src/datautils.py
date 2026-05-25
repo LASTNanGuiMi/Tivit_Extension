@@ -1,7 +1,22 @@
+import os
+
 import numpy as np
 import torch
 from aeon.datasets import load_classification
 from torch.utils.data import DataLoader, TensorDataset
+
+
+UCI_HAR_SIGNAL_FILES = [
+    "body_acc_x",
+    "body_acc_y",
+    "body_acc_z",
+    "body_gyro_x",
+    "body_gyro_y",
+    "body_gyro_z",
+    "total_acc_x",
+    "total_acc_y",
+    "total_acc_z",
+]
 
 
 def linear_interpolation(data):
@@ -81,7 +96,60 @@ def sample_equal_classes(train_data, train_labels, num_samples=1000):
     return sampled_data, sampled_labels
 
 
+def find_uci_har_dir(data_dir):
+    candidates = [
+        data_dir,
+        os.path.join(data_dir, "UCI HAR Dataset"),
+    ]
+
+    for candidate in candidates:
+        if os.path.isdir(os.path.join(candidate, "train", "Inertial Signals")):
+            return candidate
+
+    raise FileNotFoundError(
+        "Could not find UCI HAR Dataset. Expected either data_dir itself or "
+        "data_dir/'UCI HAR Dataset' to contain train/Inertial Signals."
+    )
+
+
+def load_uci_har_split(data_dir, split):
+    uci_dir = find_uci_har_dir(data_dir)
+    signal_dir = os.path.join(uci_dir, split, "Inertial Signals")
+
+    signals = []
+    for signal_name in UCI_HAR_SIGNAL_FILES:
+        path = os.path.join(signal_dir, f"{signal_name}_{split}.txt")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing UCI HAR signal file: {path}")
+        signals.append(np.loadtxt(path, dtype=np.float32))
+
+    data = np.stack(signals, axis=1)
+    labels_path = os.path.join(uci_dir, split, f"y_{split}.txt")
+    labels = np.loadtxt(labels_path, dtype=np.int64) - 1
+
+    return data, labels
+
+
 def get_dataloader(dataset, args):
+    if args.datasets == "uci":
+        train_data, train_labels = load_uci_har_split(args.data_dir, "train")
+        test_data, test_labels = load_uci_har_split(args.data_dir, "test")
+
+        train_loader = DataLoader(
+            TensorDataset(torch.Tensor(train_data).type(torch.float)),
+            num_workers=4,
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+        test_loader = DataLoader(
+            TensorDataset(torch.Tensor(test_data).type(torch.float)),
+            num_workers=4,
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+
+        return train_loader, train_labels, test_loader, test_labels
+
     data_dir = f"{args.data_dir}/{str(args.datasets).upper()}"
 
     train_data, train_labels = load_classification(
