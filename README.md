@@ -36,9 +36,9 @@ row_k = concat(signal[id_list[k - 1]],
                signal[id_list[k + 1]])
 ```
 
-## ![IMG](D:/HDMI/TiViT_Extension/img/IMG.png)
+## 活力图显示模块
 
-
+![Activity Graph sample](img/IMG.png)
 
 活力图显示模块用于把训练集中生成的 Activity Graph 保存为 PNG 样例，方便检查多通道时间序列被转换成视觉输入后的纹理、通道排列和整体形状。该模块不会参与分类训练，只用于实验可视化和调试。
 
