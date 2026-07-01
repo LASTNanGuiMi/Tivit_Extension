@@ -12,7 +12,7 @@ Activity Graph converts one multichannel time-series sample:
 x in R^(C x T)
 ```
 
-into an image-like representation that can be consumed by ViT / CLIP-ViT. The current experiment path combines:
+into an image-like representation that can be consumed by ViT / CLIP-ViT. The current reproducible experiment path combines:
 
 - visual branch: Activity Graph -> CLIP-ViT-H/14
 - time-series branch: Mantis-8M
@@ -27,27 +27,26 @@ into an image-like representation that can be consumed by ViT / CLIP-ViT. The cu
 
 ```text
 TiViT_Extension/
-|-- main.py                    # Experiment entry point
-|-- run_experiments.sh         # Current batch experiment script
-|-- run_all_fusions.sh         # Simple fusion sweep script
-|-- requirements.txt           # Full Python dependencies
-|-- requirements_runtime.txt   # Runtime-only dependency list
+|-- main.py                         # Experiment entry point
+|-- run_experiments.sh              # Main batch experiment script
+|-- run_small_data_experiments.sh   # Smaller three-seed reproducibility script
+|-- run_all_fusions.sh              # Simple fusion sweep script
+|-- requirements.txt                # Full Python dependencies
+|-- requirements_runtime.txt        # Runtime-only dependency list
 |-- scripts/
-|   |-- check_ts_file.py
-|   |-- repair_ts_labels.py
-|   |-- run_lineplot_ucr.sh
-|   |-- run_lineplot_uea.sh
-|   `-- test_custom_datasets.py
+|   |-- check_ts_file.py            # Inspect custom time-series CSV files
+|   |-- repair_ts_labels.py         # Repair custom CSV label formatting
+|   `-- test_custom_datasets.py     # Smoke-test custom dataset loaders
 `-- src/
-    |-- arguments.py           # CLI arguments
-    |-- datautils.py           # UCR / UEA / UCI / Feng / FallTL loaders
-    |-- tivit.py               # TiViT, Activity Graph, image preprocessing
-    |-- mlp_classifier.py      # MLP classifier and fusion modules
-    |-- classifier.py          # Traditional classifier path
-    |-- embedding.py           # Embedding extraction
-    |-- analysis.py            # Representation analysis
-    |-- mutual_knn.py          # Mutual-kNN alignment
-    `-- utils.py               # Seeds, splits, result writing, sample export
+    |-- arguments.py                # CLI arguments
+    |-- datautils.py                # UCR / UEA / UCI / Feng / FallTL loaders
+    |-- tivit.py                    # TiViT, Activity Graph, image preprocessing
+    |-- mlp_classifier.py           # MLP classifier and fusion modules
+    |-- classifier.py               # Traditional classifier path
+    |-- embedding.py                # Embedding extraction
+    |-- analysis.py                 # Representation analysis
+    |-- mutual_knn.py               # Mutual-kNN alignment
+    `-- utils.py                    # Seeds, splits, result writing, sample export
 ```
 
 ## Installation
@@ -65,6 +64,18 @@ The experiments assume local model checkpoints. Pass local checkpoint paths with
 - `--vit_1_name`
 - `--mantis_name`
 - optional `--vit_2_name`
+
+For batch scripts, the same local paths can be configured without editing the files:
+
+```bash
+export MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K
+export MANTIS_DIR=/path/to/Mantis-8M
+export DATA_DIR=/path/to/dataset
+export RESULT_DIR=/path/to/results
+export PYTHON_BIN="$(which python3)"
+```
+
+If these variables are not set, the scripts use the local defaults encoded near the top of each `.sh` file.
 
 ## Data Inputs
 
@@ -93,7 +104,7 @@ For custom CSV datasets, windows are built from contiguous label segments:
 --window_size 200
 --window_stride 100
 --custom_test_ratio 0.2
---max_windows_per_file 2   # current fast experiment setting for Feng/FallTL
+--max_windows_per_file 20
 ```
 
 Feng uses `Activity` as the label column and prefers accelerometer/gyroscope columns from `LowerBack`, `RightThigh`, and `LeftThigh`. FallTL uses:
@@ -124,29 +135,26 @@ Supported fusion modes:
 | `cross_attn_gate` | cross-attention with a learned gate; current query branch is `ts` |
 | `masked_pretrain` | fusion pretraining with masked branch reconstruction before classification |
 
-## Current Experiment Script
+## Reproducible Workflows
 
-The current batch script is `run_experiments.sh`. It runs one seed:
+There are two maintained batch scripts.
 
-```text
-random_seed = 2021
-```
+| Script | Purpose | Seeds | Datasets |
+| --- | --- | --- | --- |
+| `run_experiments.sh` | Main batch run with the larger MLP/fusion configuration | `2021` | UEA: `BasicMotions`, `SelfRegulationSCP1`; UCR: `ECG200`, `FordA`; Feng; FallTL |
+| `run_small_data_experiments.sh` | Smaller, faster three-seed run for repeatability checks | `2021`, `2022`, `2023` | UEA: `BasicMotions`; UCR: `ECG200`; Feng |
 
-and processes datasets from smaller to larger:
-
-```text
-UEA -> UCR -> Feng -> FallTL
-```
-
-Within each dataset, it runs all four fusion modes before moving to the next dataset:
+Both scripts run the four fusion modes in the same order:
 
 ```text
 concat -> concat_attn -> cross_attn_gate -> masked_pretrain
 ```
 
-The script skips completed results by scanning existing `args.json` and `train_val.csv` files under `--result_dir`.
+Both scripts skip completed runs by scanning existing `args.json` and `train_val.csv` files under `--result_dir`. To reproduce a clean run, point `RESULT_DIR` at an empty directory.
 
-Current main hyperparameters:
+### Main Batch Run
+
+`run_experiments.sh` is the primary experiment script. It uses:
 
 | Parameter | Value |
 | --- | --- |
@@ -174,12 +182,73 @@ Current main hyperparameters:
 Run:
 
 ```bash
-./run_experiments.sh 2>&1 | tee run_fast.log
+export MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K
+export MANTIS_DIR=/path/to/Mantis-8M
+export DATA_DIR=/path/to/dataset
+export RESULT_DIR=/path/to/tivit_results
+export PYTHON_BIN="$(which python3)"
+
+./run_experiments.sh 2>&1 | tee run_experiments.log
 ```
 
-Local logs and result folders are ignored by git.
+The script processes datasets in this order:
 
-## Single-Run Example
+```text
+UEA -> UCR -> Feng -> FallTL
+```
+
+### Small-Data Three-Seed Run
+
+`run_small_data_experiments.sh` is the recommended lightweight reproducibility script. It keeps the same multimodal model path but reduces model dimensions and dataset size so repeated runs are easier to complete.
+
+| Parameter | Value |
+| --- | --- |
+| `--image_mode` | `activity_graph` |
+| `--vit_1_layer` | `14` |
+| `--aggregation` | `mean` |
+| `--mantis` | enabled |
+| `--classifier_type` | `mlp` |
+| `--fusion_dim` | `128` |
+| `--fusion_heads` | `2` |
+| `--cross_attn_query` | `ts` |
+| `--mask_prob` | `0.2` |
+| `--pretrain_epochs` | `3` |
+| `--mlp_hidden_dim` | `128` |
+| `--mlp_num_layers` | `1` |
+| `--mlp_dropout` | `0.3` |
+| `--mlp_lr` | `3e-4` |
+| `--mlp_weight_decay` | `1e-3` |
+| `--mlp_epochs` | `40` |
+| `--mlp_early_stop_patience` | `8` |
+| `--batch_size` | `16` |
+| `--val_ratio` | `0.2` |
+| `--random_seed` | `2021`, `2022`, `2023` |
+
+Run:
+
+```bash
+export MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K
+export MANTIS_DIR=/path/to/Mantis-8M
+export DATA_DIR=/path/to/dataset
+export RESULT_DIR=/path/to/tivit_small_results
+export PYTHON_BIN="$(which python3)"
+
+./run_small_data_experiments.sh 2>&1 | tee run_small_data.log
+```
+
+This script runs:
+
+```text
+BasicMotions x 4 fusion modes x 3 seeds
+ECG200       x 4 fusion modes x 3 seeds
+Feng         x 4 fusion modes x 3 seeds
+```
+
+For Feng, it uses `--window_size 200`, `--window_stride 100`, `--custom_test_ratio 0.2`, and `--max_windows_per_file 20`.
+
+## Single-Run Examples
+
+UEA example:
 
 ```bash
 python3 main.py \
@@ -225,9 +294,9 @@ python3 main.py \
   --window_size 200 \
   --window_stride 100 \
   --custom_test_ratio 0.2 \
-  --max_windows_per_file 2 \
-  --batch_size 32 \
-  --datasets falltl \
+  --max_windows_per_file 20 \
+  --batch_size 16 \
+  --datasets feng \
   --data_dir /path/to/dataset \
   --result_dir /path/to/results \
   --random_seed 2021 \
@@ -281,6 +350,7 @@ Each run creates a timestamped folder under `--result_dir`.
 - `segment` mode requires `--patch_size` and `--stride`.
 - Sample image export is only for inspection and does not affect training.
 - Result folders use timestamps and are not overwritten.
+- Local logs, downloaded archives, and result folders are ignored by git.
 
 ## Syntax Check
 
