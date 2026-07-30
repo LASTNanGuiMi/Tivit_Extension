@@ -1,4 +1,12 @@
+import csv
+import hashlib
+import importlib.util
 import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -41,6 +49,88 @@ UCI_HAR_SIGNAL_FILES = [
     "total_acc_y",
     "total_acc_z",
 ]
+
+UCI_HAR_ACC_GYRO_SIGNAL_FILES = [
+    "total_acc_x",
+    "total_acc_y",
+    "total_acc_z",
+    "body_gyro_x",
+    "body_gyro_y",
+    "body_gyro_z",
+]
+
+UCI_HAR_ACC_GYRO_INDICES = [6, 7, 8, 3, 4, 5]
+
+
+AAAI27_DATASET_NAMES = (
+    "mPowerRest",
+    "mPowerReturn",
+    "mPowerOutbound",
+    "PADS_09_task06_DrinkGlas",
+    "PADS_10_task07_CrossArms",
+    "Shimmer_11_session11_DRINK",
+    "Shimmer_12_session12_PICK",
+)
+AAAI27_EXPECTED_SPLIT_SAMPLES = {
+    "mPowerRest": (16124, 5399, 5368),
+    "mPowerReturn": (9132, 2619, 2733),
+    "mPowerOutbound": (15289, 5278, 5193),
+    "PADS_09_task06_DrinkGlas": (280, 92, 97),
+    "PADS_10_task07_CrossArms": (280, 92, 97),
+    "Shimmer_11_session11_DRINK": (77, 25, 28),
+    "Shimmer_12_session12_PICK": (65, 21, 25),
+}
+AAAI27_DYNAMIC_DATASET_SPECS = {
+    "PADS_10_task07_CrossArms": {
+        "sequence_length": 976,
+        "label_names": {
+            0: "Healthy",
+            1: "Parkinson",
+            2: "OtherMovementDisorders",
+        },
+        "expected_subject_counts": (280, 92, 97),
+        "expected_sample_count": 469,
+    },
+    "Shimmer_12_session12_PICK": {
+        "sequence_length": 4096,
+        "label_names": {0: "HC", 1: "MildPD", 2: "ModeratePD"},
+        "expected_subject_counts": (65, 21, 25),
+        "expected_sample_count": 111,
+    },
+}
+AAAI27_REFERENCE_DATASETS_SHA256 = (
+    "c11d4678274b9c66d36d08f4fc08890c99fe8e79879f008d43b19b1faaf535a0"
+)
+_AAAI27_MODULE_CACHE = {}
+
+
+@dataclass
+class AAAI27DataBundle:
+    dataset_name: str
+    data_root: Path
+    train_loader: DataLoader
+    train_labels: np.ndarray
+    vali_loader: DataLoader
+    vali_labels: np.ndarray
+    test_loader: DataLoader
+    test_labels: np.ndarray
+    train_dataset: Any
+    vali_dataset: Any
+    test_dataset: Any
+    label_mode: str = "original"
+
+
+@dataclass
+class FallTLComparisonBundle:
+    train_loader: DataLoader
+    train_labels: np.ndarray
+    vali_loader: DataLoader
+    vali_labels: np.ndarray
+    test_loader: DataLoader
+    test_labels: np.ndarray
+    train_files: list[str]
+    vali_files: list[str]
+    test_files: list[str]
 
 
 def linear_interpolation(data):
@@ -136,12 +226,12 @@ def find_uci_har_dir(data_dir):
     )
 
 
-def load_uci_har_split(data_dir, split):
+def load_uci_har_split(data_dir, split, signal_files=UCI_HAR_SIGNAL_FILES):
     uci_dir = find_uci_har_dir(data_dir)
     signal_dir = os.path.join(uci_dir, split, "Inertial Signals")
 
     signals = []
-    for signal_name in UCI_HAR_SIGNAL_FILES:
+    for signal_name in signal_files:
         path = os.path.join(signal_dir, f"{signal_name}_{split}.txt")
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Missing UCI HAR signal file: {path}")
@@ -152,6 +242,84 @@ def load_uci_har_split(data_dir, split):
     labels = np.loadtxt(labels_path, dtype=np.int64) - 1
 
     return data, labels
+
+
+def find_preprocessed_har_dir(data_dir, dirname, required=True):
+    candidates = [
+        data_dir,
+        os.path.join(data_dir, dirname),
+        os.path.join(data_dir, dirname, dirname),
+        os.path.join(data_dir, "med_data", dirname),
+        os.path.join(data_dir, "med_data", dirname, dirname),
+    ]
+
+    seen = set()
+    for candidate in candidates:
+        candidate = os.path.normpath(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        feature_path = os.path.join(candidate, "Feature", "feature.npy")
+        label_path = os.path.join(candidate, "Label", "label.npy")
+        if os.path.isfile(feature_path) and os.path.isfile(label_path):
+            return candidate
+
+    if not required:
+        return None
+
+    raise FileNotFoundError(
+        f"Could not find preprocessed {dirname}. Expected Feature/feature.npy "
+        f"and Label/label.npy below {data_dir!r}, optionally under med_data/{dirname}."
+    )
+
+
+def load_preprocessed_har(data_dir, dirname, channel_indices=None):
+    dataset_dir = find_preprocessed_har_dir(data_dir, dirname)
+    feature_path = os.path.join(dataset_dir, "Feature", "feature.npy")
+    label_path = os.path.join(dataset_dir, "Label", "label.npy")
+    features = np.load(feature_path, mmap_mode="r", allow_pickle=False)
+    labels = np.load(label_path, mmap_mode="r", allow_pickle=False)
+
+    if features.ndim != 3:
+        raise ValueError(
+            f"Expected {dirname} features with shape (samples, time, channels), "
+            f"got {features.shape}."
+        )
+    if labels.ndim != 1 or len(labels) != len(features):
+        raise ValueError(
+            f"Expected one {dirname} label per sample, got features={features.shape}, "
+            f"labels={labels.shape}."
+        )
+
+    if channel_indices is None:
+        channel_indices = list(range(features.shape[2]))
+    else:
+        channel_indices = list(channel_indices)
+    if not channel_indices or len(set(channel_indices)) != len(channel_indices):
+        raise ValueError(f"Channel indices must be non-empty and unique: {channel_indices}")
+    if min(channel_indices) < 0 or max(channel_indices) >= features.shape[2]:
+        raise ValueError(
+            f"Channel indices {channel_indices} are invalid for {dirname} shape "
+            f"{features.shape}."
+        )
+
+    # Downloaded Medformer arrays use (N, T, C); TiViT expects (N, C, T).
+    data = np.asarray(
+        features[:, :, channel_indices], dtype=np.float32
+    ).transpose(0, 2, 1)
+    encoded_labels = _encode_labels(np.asarray(labels))
+
+    return data, encoded_labels
+
+
+def _split_array_data(data, labels, test_ratio, random_seed):
+    train_indices, test_indices = _split_indices(labels, test_ratio, random_seed)
+    return (
+        data[train_indices],
+        labels[train_indices],
+        data[test_indices],
+        labels[test_indices],
+    )
 
 
 def find_dataset_dir(data_dir, dirname_candidates, required_glob="*.csv"):
@@ -374,6 +542,164 @@ def load_falltl_data(
     return _build_custom_split(samples, labels, test_ratio, random_seed)
 
 
+def _natural_path_key(path):
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", os.path.basename(path))
+    ]
+
+
+def _load_falltl_comparison_arrays(data_dir, sequence_length=256):
+    from sklearn.preprocessing import StandardScaler
+
+    falltl_dir = find_dataset_dir(data_dir, ["FallTL", "falltl"], "*.csv")
+    csv_files = sorted(
+        _glob_csv_files(falltl_dir, "*.csv"), key=_natural_path_key
+    )
+    source_files = np.asarray([os.path.basename(path) for path in csv_files])
+    labels = np.asarray(
+        [1 if filename.startswith("F") else 0 for filename in source_files],
+        dtype=np.int64,
+    )
+    baseline_cache = Path(f"/tmp/medformer_falltl_{sequence_length}.npz")
+    raw_features = None
+    if baseline_cache.is_file():
+        cached = np.load(baseline_cache)
+        cached_features = cached["X"]
+        cached_labels = cached["y"]
+        if (
+            cached_features.shape == (len(csv_files), sequence_length, 9)
+            and np.array_equal(cached_labels, labels)
+        ):
+            raw_features = cached_features
+            print(f"Using validated FallTL comparison cache: {baseline_cache}")
+
+    if raw_features is None:
+        sequences = []
+        valid_labels = []
+        valid_files = []
+        for csv_file, label, source_file in zip(csv_files, labels, source_files):
+            values = np.genfromtxt(
+                csv_file,
+                delimiter=",",
+                skip_header=1,
+                usecols=range(9),
+                dtype=np.float32,
+            )
+            if values.ndim == 1:
+                values = values.reshape(1, -1)
+            values = values[~np.isnan(values).any(axis=1)]
+            if len(values) == 0:
+                continue
+            positions = np.linspace(0, len(values) - 1, sequence_length)
+            sequences.append(
+                np.stack(
+                    [
+                        np.interp(
+                            positions, np.arange(len(values)), values[:, channel]
+                        )
+                        for channel in range(9)
+                    ],
+                    axis=1,
+                ).astype(np.float32)
+            )
+            valid_labels.append(label)
+            valid_files.append(source_file)
+        raw_features = np.stack(sequences)
+        labels = np.asarray(valid_labels, dtype=np.int64)
+        source_files = np.asarray(valid_files)
+
+    if not len(raw_features):
+        raise FileNotFoundError(f"No FallTL CSV files found below {data_dir}")
+    features = np.stack(
+        [
+            StandardScaler().fit_transform(sequence).astype(np.float32).T
+            for sequence in raw_features
+        ]
+    )
+    return (
+        features,
+        labels,
+        source_files,
+    )
+
+
+def get_falltl_comparison_dataloaders(args):
+    from sklearn.model_selection import train_test_split
+
+    data, labels, source_files = _load_falltl_comparison_arrays(args.data_dir)
+    all_indices = np.arange(len(labels))
+    train_indices, remainder_indices = train_test_split(
+        all_indices,
+        test_size=0.4,
+        random_state=42,
+        stratify=labels,
+    )
+    vali_indices, test_indices = train_test_split(
+        remainder_indices,
+        test_size=0.5,
+        random_state=42,
+        stratify=labels[remainder_indices],
+    )
+
+    train_loader, vali_loader = _make_tensor_loaders(
+        data[train_indices], data[vali_indices], args.batch_size
+    )
+    _, test_loader = _make_tensor_loaders(
+        data[train_indices], data[test_indices], args.batch_size
+    )
+    bundle = FallTLComparisonBundle(
+        train_loader=train_loader,
+        train_labels=labels[train_indices],
+        vali_loader=vali_loader,
+        vali_labels=labels[vali_indices],
+        test_loader=test_loader,
+        test_labels=labels[test_indices],
+        train_files=source_files[train_indices].tolist(),
+        vali_files=source_files[vali_indices].tolist(),
+        test_files=source_files[test_indices].tolist(),
+    )
+    distributions = []
+    for split, split_labels in (
+        ("train", bundle.train_labels),
+        ("vali", bundle.vali_labels),
+        ("test", bundle.test_labels),
+    ):
+        values, counts = np.unique(split_labels, return_counts=True)
+        distributions.append(
+            f"{split}=" + "/".join(
+                f"{int(value)}:{int(count)}"
+                for value, count in zip(values, counts)
+            )
+        )
+    print(
+        "FallTL comparison_binary: sequence_length=256; labels=D:0/F:1; "
+        "split_seed=42; " + "; ".join(distributions)
+    )
+    return bundle
+
+
+def write_falltl_comparison_split_audit(bundle, result_dir):
+    split_dir = Path(result_dir) / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+    output_path = split_dir / "FallTL_comparison_binary_split.csv"
+    rows = []
+    for split, files, labels in (
+        ("train", bundle.train_files, bundle.train_labels),
+        ("vali", bundle.vali_files, bundle.vali_labels),
+        ("test", bundle.test_files, bundle.test_labels),
+    ):
+        rows.extend(
+            (filename, int(label), split)
+            for filename, label in zip(files, labels)
+        )
+    with output_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["filename", "label_id", "split"])
+        writer.writerows(sorted(rows))
+    return output_path
+
+
 def _find_feng_feature_columns(columns):
     available = set(columns)
     preferred = []
@@ -464,13 +790,13 @@ def load_feng_data(
 def _make_tensor_loaders(train_data, test_data, batch_size):
     train_loader = DataLoader(
         TensorDataset(torch.Tensor(train_data).type(torch.float)),
-        num_workers=4,
+        num_workers=0,
         batch_size=batch_size,
         shuffle=False,
     )
     test_loader = DataLoader(
         TensorDataset(torch.Tensor(test_data).type(torch.float)),
-        num_workers=4,
+        num_workers=0,
         batch_size=batch_size,
         shuffle=False,
     )
@@ -478,18 +804,347 @@ def _make_tensor_loaders(train_data, test_data, batch_size):
     return train_loader, test_loader
 
 
+def find_aaai27_data_root(data_dir, dataset_name):
+    if dataset_name not in AAAI27_DATASET_NAMES:
+        raise ValueError(f"Unsupported AAAI27 dataset: {dataset_name}")
+
+    base = Path(data_dir).expanduser()
+    candidates = (
+        base,
+        base / "AAAI_Data",
+        base / "med_data" / "AAAI_Data",
+        base / "med_data",
+    )
+    seen = set()
+    for candidate in candidates:
+        normalized = candidate.resolve()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if not (
+            (normalized / "data_loading" / "datasets.py").is_file()
+            and (normalized / "data_loading" / "split_reference_seed42.csv").is_file()
+            and (normalized / dataset_name / "Meta" / "subject_map.csv").is_file()
+            and (normalized / dataset_name / "Feature").is_dir()
+        ):
+            continue
+        return normalized
+
+    raise FileNotFoundError(
+        f"Could not find AAAI_Data/{dataset_name} below {data_dir!r}. "
+        "Expected the dataset directories and data_loading reference files."
+    )
+
+
+def _load_aaai27_reference(data_root):
+    module_path = Path(data_root) / "data_loading" / "datasets.py"
+    digest = hashlib.sha256(module_path.read_bytes()).hexdigest()
+    if digest != AAAI27_REFERENCE_DATASETS_SHA256:
+        raise ValueError(
+            f"Unexpected SHA-256 for {module_path}: {digest}. "
+            f"Expected {AAAI27_REFERENCE_DATASETS_SHA256}."
+        )
+
+    cache_key = str(module_path.resolve())
+    if cache_key in _AAAI27_MODULE_CACHE:
+        return _AAAI27_MODULE_CACHE[cache_key]
+
+    module_name = f"_aaai27_reference_{digest[:12]}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load AAAI27 reference module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    _AAAI27_MODULE_CACHE[cache_key] = module
+    return module
+
+
+def _make_aaai27_tensor_loader(source_dataset, batch_size):
+    if source_dataset.X is None or source_dataset.y is None:
+        raise ValueError("AAAI27 source dataset did not load samples")
+
+    # The reference interface is [N,T,6]; TiViT consumes [N,6,T].
+    inputs = torch.from_numpy(source_dataset.X.transpose(0, 2, 1))
+    tensor_dataset = TensorDataset(inputs)
+    tensor_dataset.source_dataset = source_dataset
+    tensor_dataset.sample_subject_ids = source_dataset.sample_subject_ids
+    loader = DataLoader(
+        tensor_dataset,
+        num_workers=0,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    labels = np.asarray(source_dataset.y, dtype=np.int64)
+    return loader, labels
+
+
+def _validate_aaai27_bundle(bundle, reference_module):
+    reference_csv = bundle.data_root / "data_loading" / "split_reference_seed42.csv"
+    reference = reference_module._read_reference_csv(reference_csv)
+    if bundle.dataset_name in reference:
+        reference_module._verify_reference_assignment(bundle.train_dataset, reference)
+    reference_module._validate_label_file(bundle.train_dataset)
+
+    split_items = (
+        ("train", bundle.train_dataset, bundle.train_loader, bundle.train_labels),
+        ("vali", bundle.vali_dataset, bundle.vali_loader, bundle.vali_labels),
+        ("test", bundle.test_dataset, bundle.test_loader, bundle.test_labels),
+    )
+    split_sample_counts = []
+    for split, source_dataset, loader, labels in split_items:
+        if source_dataset.split != split:
+            raise AssertionError(
+                f"{bundle.dataset_name}: expected split={split}, got {source_dataset.split}"
+            )
+        expected_shape = (
+            len(source_dataset),
+            source_dataset.num_channels,
+            source_dataset.sequence_length,
+        )
+        actual_shape = tuple(loader.dataset.tensors[0].shape)
+        if actual_shape != expected_shape:
+            raise AssertionError(
+                f"{bundle.dataset_name} split={split}: expected TiViT shape "
+                f"{expected_shape}, got {actual_shape}"
+            )
+        if not np.array_equal(labels, source_dataset.y):
+            raise AssertionError(
+                f"{bundle.dataset_name} split={split}: adapter labels changed"
+            )
+        expected_labels = np.asarray(
+            [
+                source_dataset.subject_label[int(subject_id)]
+                for subject_id in source_dataset.sample_subject_ids
+            ],
+            dtype=np.int64,
+        )
+        if not np.array_equal(labels, expected_labels):
+            raise AssertionError(
+                f"{bundle.dataset_name} split={split}: sample labels do not match subjects"
+            )
+        split_sample_counts.append(len(source_dataset))
+
+    actual_split_samples = tuple(split_sample_counts)
+    expected_split_samples = AAAI27_EXPECTED_SPLIT_SAMPLES[bundle.dataset_name]
+    if actual_split_samples != expected_split_samples:
+        raise AssertionError(
+            f"{bundle.dataset_name}: expected train/vali/test samples "
+            f"{expected_split_samples}, got {actual_split_samples}"
+        )
+    total_samples = sum(actual_split_samples)
+    if total_samples != bundle.train_dataset.expected_sample_count:
+        raise AssertionError(
+            f"{bundle.dataset_name}: expected "
+            f"{bundle.train_dataset.expected_sample_count} total samples, "
+            f"got {total_samples}"
+        )
+
+
+def get_aaai27_dataloaders(dataset_name, args):
+    data_root = find_aaai27_data_root(args.data_dir, dataset_name)
+    reference_module = _load_aaai27_reference(data_root)
+    dataset_classes = {
+        dataset_class.dataset_name: dataset_class
+        for dataset_class in reference_module.DATASET_CLASSES
+    }
+    for dynamic_name, spec in AAAI27_DYNAMIC_DATASET_SPECS.items():
+        dataset_classes[dynamic_name] = type(
+            f"{dynamic_name}Dataset",
+            (reference_module.SubjectMapDataset,),
+            {
+                "dataset_name": dynamic_name,
+                "relative_directories": (dynamic_name,),
+                **spec,
+            },
+        )
+    dataset_class = dataset_classes[dataset_name]
+
+    split_datasets = {
+        split: dataset_class(
+            data_root=data_root,
+            split=split,
+            normalize=True,
+            verbose=False,
+        )
+        for split in ("train", "vali", "test")
+    }
+    train_loader, train_labels = _make_aaai27_tensor_loader(
+        split_datasets["train"], args.batch_size
+    )
+    vali_loader, vali_labels = _make_aaai27_tensor_loader(
+        split_datasets["vali"], args.batch_size
+    )
+    test_loader, test_labels = _make_aaai27_tensor_loader(
+        split_datasets["test"], args.batch_size
+    )
+    bundle = AAAI27DataBundle(
+        dataset_name=dataset_name,
+        data_root=data_root,
+        train_loader=train_loader,
+        train_labels=train_labels,
+        vali_loader=vali_loader,
+        vali_labels=vali_labels,
+        test_loader=test_loader,
+        test_labels=test_labels,
+        train_dataset=split_datasets["train"],
+        vali_dataset=split_datasets["vali"],
+        test_dataset=split_datasets["test"],
+    )
+    _validate_aaai27_bundle(bundle, reference_module)
+
+    label_mode = getattr(args, "aaai27_label_mode", "original")
+    if label_mode == "zero_vs_rest":
+        bundle.train_labels = (bundle.train_labels != 0).astype(np.int64)
+        bundle.vali_labels = (bundle.vali_labels != 0).astype(np.int64)
+        bundle.test_labels = (bundle.test_labels != 0).astype(np.int64)
+        bundle.label_mode = label_mode
+    elif label_mode != "original":
+        raise ValueError(f"Unsupported AAAI27 label mode: {label_mode}")
+
+    split_distributions = []
+    for split, labels in (
+        ("train", bundle.train_labels),
+        ("vali", bundle.vali_labels),
+        ("test", bundle.test_labels),
+    ):
+        values, counts = np.unique(labels, return_counts=True)
+        distribution = "/".join(
+            f"{int(value)}:{int(count)}" for value, count in zip(values, counts)
+        )
+        split_distributions.append(f"{split}=[{distribution}]")
+    print(
+        f"AAAI27 {dataset_name}: "
+        f"train={len(train_labels)}, vali={len(vali_labels)}, test={len(test_labels)}; "
+        f"label_mode={label_mode}; {' '.join(split_distributions)}; "
+        "subject split/reference=PASS"
+    )
+    return bundle
+
+
+def write_aaai27_split_audit(bundle, result_dir):
+    split_dir = Path(result_dir) / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+    output_path = split_dir / f"{bundle.dataset_name}_subject_split.csv"
+
+    assignments = []
+    for split, source_dataset in (
+        ("train", bundle.train_dataset),
+        ("vali", bundle.vali_dataset),
+        ("test", bundle.test_dataset),
+    ):
+        assignments.extend(
+            (
+                int(subject_id),
+                int(source_dataset.subject_label[int(subject_id)]),
+                split,
+            )
+            for subject_id in source_dataset.selected_subject_ids
+        )
+
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "dataset_name",
+            "numeric_subject_id",
+            "original_label_id",
+            "label_id",
+            "split",
+        ])
+        for subject_id, original_label_id, split in sorted(assignments):
+            label_id = (
+                int(original_label_id != 0)
+                if bundle.label_mode == "zero_vs_rest"
+                else original_label_id
+            )
+            writer.writerow(
+                [
+                    bundle.dataset_name,
+                    subject_id,
+                    original_label_id,
+                    label_id,
+                    split,
+                ]
+            )
+    return output_path
+
+
 def get_dataloader(dataset, args):
-    if args.datasets == "uci":
-        train_data, train_labels = load_uci_har_split(args.data_dir, "train")
-        test_data, test_labels = load_uci_har_split(args.data_dir, "test")
-        train_data, train_labels, test_data, test_labels = _resplit_data(
-            train_data,
-            train_labels,
-            test_data,
-            test_labels,
+    har_channels = getattr(args, "har_channels", "all")
+    if har_channels not in {"all", "acc_gyro"}:
+        raise ValueError(f"Unsupported HAR channel subset: {har_channels}")
+
+    if args.datasets == "flaap":
+        data, labels = load_preprocessed_har(
+            args.data_dir,
+            "FLAAP",
+            channel_indices=range(6),
+        )
+        if data.shape[1] != 6:
+            raise ValueError(f"Expected FLAAP to contain 6 channels, got {data.shape}.")
+        train_data, train_labels, test_data, test_labels = _split_array_data(
+            data,
+            labels,
             args.custom_test_ratio,
             args.random_seed,
         )
+        train_loader, test_loader = _make_tensor_loaders(
+            train_data, test_data, args.batch_size
+        )
+        return train_loader, train_labels, test_loader, test_labels
+
+    if args.datasets == "uci":
+        signal_files = UCI_HAR_SIGNAL_FILES
+        channel_indices = range(9)
+        expected_channels = 9
+        if har_channels == "acc_gyro":
+            signal_files = UCI_HAR_ACC_GYRO_SIGNAL_FILES
+            channel_indices = UCI_HAR_ACC_GYRO_INDICES
+            expected_channels = 6
+
+        raw_uci_dir = None
+        try:
+            raw_uci_dir = find_uci_har_dir(args.data_dir)
+        except FileNotFoundError:
+            pass
+
+        if raw_uci_dir is not None:
+            train_data, train_labels = load_uci_har_split(
+                raw_uci_dir, "train", signal_files=signal_files
+            )
+            test_data, test_labels = load_uci_har_split(
+                raw_uci_dir, "test", signal_files=signal_files
+            )
+            train_data, train_labels, test_data, test_labels = _resplit_data(
+                train_data,
+                train_labels,
+                test_data,
+                test_labels,
+                args.custom_test_ratio,
+                args.random_seed,
+            )
+        else:
+            data, labels = load_preprocessed_har(
+                args.data_dir,
+                "UCI-HAR",
+                channel_indices=channel_indices,
+            )
+            train_data, train_labels, test_data, test_labels = _split_array_data(
+                data,
+                labels,
+                args.custom_test_ratio,
+                args.random_seed,
+            )
+
+        if train_data.shape[1] != expected_channels:
+            raise ValueError(
+                f"Expected UCI-HAR {har_channels} data to contain "
+                f"{expected_channels} channels, got {train_data.shape}."
+            )
 
         train_loader, test_loader = _make_tensor_loaders(
             train_data, test_data, args.batch_size
@@ -590,13 +1245,13 @@ def get_dataloader(dataset, args):
 
     train_loader = DataLoader(
         TensorDataset(torch.Tensor(train_data).type(torch.float)),
-        num_workers=4,
+        num_workers=0,
         batch_size=args.batch_size,
         shuffle=False,
     )
     test_loader = DataLoader(
         TensorDataset(torch.Tensor(test_data).type(torch.float)),
-        num_workers=4,
+        num_workers=0,
         batch_size=args.batch_size,
         shuffle=False,
     )

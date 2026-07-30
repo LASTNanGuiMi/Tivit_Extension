@@ -7,9 +7,11 @@ MANTIS_DIR="${MANTIS_DIR:-$SERVER_ROOT/Checkpoint/Checkpoint/models--paris-noah-
 DATA_DIR="${DATA_DIR:-/home/xuzheyuan/guoyin/data}"
 PYTHON_BIN="${PYTHON_BIN:-/home/xuzheyuan/miniconda3/envs/tivit_env/bin/python}"
 
-SEEDS="${SEEDS:-2022}"
+FIXED_ABLATION_SEED=2022
+SEEDS="${SEEDS:-$FIXED_ABLATION_SEED}"
 REPEATS="${REPEATS:-3}"
 DATASET_GROUPS="${DATASET_GROUPS:-feng falltl uci}"
+ABLATION_CONDITIONS="${ABLATION_CONDITIONS:-vision_line_plot vision_activity_graph timeseries_mantis multimodal_concat multimodal_proposed}"
 PROPOSED_FUSION="${PROPOSED_FUSION:-cross_attn_gate}"
 
 FENG_MAX_WINDOWS="${FENG_MAX_WINDOWS:-20}"

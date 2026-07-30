@@ -1,12 +1,14 @@
-import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import argparse
+import sys
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-from src.datautils import get_dataloader
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.datautils import get_dataloader  # noqa: E402
 
 
 def summarize_labels(labels):

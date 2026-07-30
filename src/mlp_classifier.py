@@ -1,12 +1,23 @@
+import os
+from copy import deepcopy
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn as nn
-from copy import deepcopy
 from torch.utils.data import DataLoader, Subset, TensorDataset
 from tqdm import tqdm
 
 from src.classifier import compute_metrics_from_predictions
-from src.utils import get_split, resize_mantis_input, resize_moment_input
+from src.utils import (
+    get_split,
+    resize_mantis_input,
+    resize_moment_input,
+    set_random_seed,
+)
+
+
+FEATURE_CACHE_SCHEMA_VERSION = 1
 
 
 class MLPClassifier(nn.Module):
@@ -227,14 +238,15 @@ def _map_labels(labels, class_to_idx):
     return np.asarray([class_to_idx[label] for label in labels], dtype=np.int64)
 
 
-def _build_loader(data, labels, indices, batch_size, shuffle):
-    dataset = TensorDataset(
-        data,
-        torch.as_tensor(labels, dtype=torch.long),
-    )
-    subset = Subset(dataset, indices)
+def _balanced_class_weights(label_indices, num_classes, device):
+    counts = np.bincount(label_indices, minlength=num_classes)
+    if np.any(counts == 0):
+        raise ValueError(
+            f"Cannot balance classes with zero training samples: {counts.tolist()}"
+        )
 
-    return DataLoader(subset, batch_size=batch_size, shuffle=shuffle, num_workers=0)
+    weights = len(label_indices) / (num_classes * counts)
+    return torch.as_tensor(weights, dtype=torch.float32, device=device)
 
 
 def _forward_tivit_batch(model, batch, channels, device):
@@ -309,29 +321,180 @@ def forward_feature_batch(
 
 
 @torch.no_grad()
-def _infer_feature_dim(feature_models, data, channels, device):
-    batch = data[:1]
-    features = forward_feature_batch(batch=batch, channels=channels, device=device, **feature_models)
+def _extract_feature_split(loader, feature_models, channels, device):
+    _set_trainable(feature_models.values(), False)
+    branch_batches = None
 
-    return [feature.shape[1] for feature in features]
-
-
-def _run_epoch(mlp, fusion_module, feature_models, loader, channels, criterion, optimizer, device):
-    _set_trainable([mlp, fusion_module, *feature_models.values()], True)
-    total_loss = 0.0
-    total_samples = 0
-    gate_means = []
-
-    for batch, labels in tqdm(loader, desc="Train MLP", leave=False):
-        labels = labels.to(device)
-
-        optimizer.zero_grad(set_to_none=True)
-        branch_features = forward_feature_batch(
+    for (batch,) in tqdm(loader, desc="Extract model features", leave=False):
+        features = forward_feature_batch(
             batch=batch,
             channels=channels,
             device=device,
             **feature_models,
         )
+        if branch_batches is None:
+            branch_batches = [[] for _ in features]
+        for batches, feature in zip(branch_batches, features):
+            batches.append(feature.detach().cpu())
+
+    if branch_batches is None:
+        raise ValueError("Cannot extract features from an empty split.")
+
+    return [torch.cat(batches, dim=0) for batches in branch_batches]
+
+
+def _feature_branch_names(feature_models):
+    return [name for name, model in feature_models.items() if model is not None]
+
+
+def _load_feature_cache(
+    path,
+    expected_labels,
+    expected_branch_names,
+    expected_signature,
+):
+    if not path.is_file():
+        return None
+
+    with np.load(path, allow_pickle=False) as cached:
+        required_keys = {
+            "schema_version",
+            "cache_signature",
+            "branch_names",
+            "labels",
+        }
+        missing_keys = required_keys - set(cached.files)
+        if missing_keys:
+            raise ValueError(
+                f"Feature cache is missing metadata {sorted(missing_keys)}: {path}"
+            )
+        schema_version = int(cached["schema_version"].item())
+        if schema_version != FEATURE_CACHE_SCHEMA_VERSION:
+            raise ValueError(
+                f"Feature cache schema mismatch in {path}: expected "
+                f"{FEATURE_CACHE_SCHEMA_VERSION}, got {schema_version}."
+            )
+        signature = str(cached["cache_signature"].item())
+        if signature != (expected_signature or ""):
+            raise ValueError(
+                f"Feature cache model/configuration mismatch: {path}"
+            )
+        branch_names = cached["branch_names"].tolist()
+        labels = cached["labels"]
+        if branch_names != expected_branch_names:
+            raise ValueError(
+                f"Feature cache branch mismatch in {path}: "
+                f"expected {expected_branch_names}, got {branch_names}."
+            )
+        if not np.array_equal(labels, np.asarray(expected_labels, dtype=np.int64)):
+            raise ValueError(f"Feature cache labels do not match current split: {path}")
+        branch_keys = [f"branch_{index}" for index in range(len(branch_names))]
+        missing_branches = set(branch_keys) - set(cached.files)
+        if missing_branches:
+            raise ValueError(
+                f"Feature cache is missing branches {sorted(missing_branches)}: {path}"
+            )
+        features = [torch.from_numpy(cached[key].copy()) for key in branch_keys]
+
+    if any(len(feature) != len(labels) for feature in features):
+        raise ValueError(f"Feature cache sample count mismatch: {path}")
+    if any(feature.ndim != 2 for feature in features):
+        raise ValueError(f"Feature cache branches must be two-dimensional: {path}")
+    if any(not torch.isfinite(feature).all() for feature in features):
+        raise ValueError(f"Feature cache contains non-finite values: {path}")
+    print(f"Loaded model features: {path}")
+    return features
+
+
+def _save_feature_cache(path, labels, branch_names, features, cache_signature):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arrays = {
+        "schema_version": np.asarray(FEATURE_CACHE_SCHEMA_VERSION, dtype=np.int64),
+        "cache_signature": np.asarray(cache_signature or ""),
+        "labels": np.asarray(labels, dtype=np.int64),
+        "branch_names": np.asarray(branch_names),
+    }
+    arrays.update(
+        {
+            f"branch_{index}": feature.numpy()
+            for index, feature in enumerate(features)
+        }
+    )
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp.npz")
+    try:
+        np.savez_compressed(temporary_path, **arrays)
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    print(f"Saved model features: {path}")
+
+
+def _get_feature_split(
+    split,
+    loader,
+    labels,
+    feature_models,
+    channels,
+    device,
+    feature_cache_dir,
+    feature_cache_signature,
+):
+    branch_names = _feature_branch_names(feature_models)
+    cache_path = None
+    if feature_cache_dir:
+        cache_path = Path(feature_cache_dir) / f"{split}.npz"
+        cached = _load_feature_cache(
+            cache_path,
+            labels,
+            branch_names,
+            feature_cache_signature,
+        )
+        if cached is not None:
+            return cached
+
+    features = _extract_feature_split(loader, feature_models, channels, device)
+    if cache_path is not None:
+        _save_feature_cache(
+            cache_path,
+            labels,
+            branch_names,
+            features,
+            feature_cache_signature,
+        )
+    return features
+
+
+def _build_feature_loader(features, labels, indices, batch_size, shuffle):
+    dataset = TensorDataset(
+        *features,
+        torch.as_tensor(labels, dtype=torch.long),
+    )
+    return DataLoader(
+        Subset(dataset, indices),
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=0,
+    )
+
+
+def _infer_feature_dim(features):
+    if not features:
+        raise ValueError("At least one cached feature branch is required.")
+
+    return [feature.shape[1] for feature in features]
+
+
+def _run_epoch(mlp, fusion_module, loader, criterion, optimizer, device):
+    _set_trainable([mlp, fusion_module], True)
+    total_loss = 0.0
+    total_samples = 0
+    gate_means = []
+
+    for *branch_features, labels in tqdm(loader, desc="Train MLP", leave=False):
+        branch_features = [feature.to(device) for feature in branch_features]
+        labels = labels.to(device)
+
+        optimizer.zero_grad(set_to_none=True)
         features = fusion_module(branch_features)
         logits = mlp(features)
         loss = criterion(logits, labels)
@@ -352,19 +515,14 @@ def _run_epoch(mlp, fusion_module, feature_models, loader, channels, criterion, 
     return total_loss / max(total_samples, 1), mean_gate
 
 
-def _run_masked_pretrain_epoch(fusion_module, feature_models, loader, channels, optimizer, device, mask_prob):
-    _set_trainable([fusion_module, *feature_models.values()], True)
+def _run_masked_pretrain_epoch(fusion_module, loader, optimizer, device, mask_prob):
+    _set_trainable([fusion_module], True)
     total_loss = 0.0
     total_samples = 0
 
-    for batch, _ in tqdm(loader, desc="Pretrain Fusion", leave=False):
+    for *branch_features, labels in tqdm(loader, desc="Pretrain Fusion", leave=False):
+        branch_features = [feature.to(device) for feature in branch_features]
         optimizer.zero_grad(set_to_none=True)
-        branch_features = forward_feature_batch(
-            batch=batch,
-            channels=channels,
-            device=device,
-            **feature_models,
-        )
         result = fusion_module.reconstruct_masked(
             branch_embeddings=branch_features,
             mask_prob=mask_prob,
@@ -376,7 +534,7 @@ def _run_masked_pretrain_epoch(fusion_module, feature_models, loader, channels, 
         loss.backward()
         optimizer.step()
 
-        batch_size = batch.shape[0]
+        batch_size = labels.shape[0]
         total_loss += loss.item() * batch_size
         total_samples += batch_size
 
@@ -384,19 +542,14 @@ def _run_masked_pretrain_epoch(fusion_module, feature_models, loader, channels, 
 
 
 @torch.no_grad()
-def _evaluate(mlp, fusion_module, feature_models, loader, channels, classes, device):
-    _set_trainable([mlp, fusion_module, *feature_models.values()], False)
+def _evaluate(mlp, fusion_module, loader, classes, device):
+    _set_trainable([mlp, fusion_module], False)
     y_true = []
     y_pred = []
     y_score = []
 
-    for batch, labels in tqdm(loader, desc="Evaluate MLP", leave=False):
-        branch_features = forward_feature_batch(
-            batch=batch,
-            channels=channels,
-            device=device,
-            **feature_models,
-        )
+    for *branch_features, labels in tqdm(loader, desc="Evaluate MLP", leave=False):
+        branch_features = [feature.to(device) for feature in branch_features]
         features = fusion_module(branch_features)
         logits = mlp(features)
         probabilities = torch.softmax(logits, dim=1)
@@ -435,35 +588,32 @@ def train_mlp_classifier(
     cross_attn_query,
     mask_prob,
     pretrain_epochs,
+    class_weight="none",
     vision_model_1=None,
     vision_model_2=None,
     mantis_model=None,
     moment_model=None,
+    val_loader=None,
+    val_labels=None,
+    feature_cache_dir=None,
+    feature_cache_signature=None,
 ):
-    train_indices, val_indices = get_split(
-        train_loader.dataset,
-        frac=val_ratio,
-        random_seed=random_seed,
-    )
+    has_fixed_validation = val_loader is not None or val_labels is not None
+    if has_fixed_validation and (val_loader is None or val_labels is None):
+        raise ValueError("val_loader and val_labels must be provided together")
+
+    if has_fixed_validation:
+        train_indices = list(range(len(train_loader.dataset)))
+        val_indices = list(range(len(val_loader.dataset)))
+    else:
+        train_indices, val_indices = get_split(
+            train_loader.dataset,
+            frac=val_ratio,
+            random_seed=random_seed,
+        )
 
     train_label_indices, classes, class_to_idx = _labels_to_indices(train_labels)
     test_label_indices = _map_labels(test_labels, class_to_idx)
-
-    train_data = train_loader.dataset.tensors[0]
-    test_data = test_loader.dataset.tensors[0]
-    mlp_train_loader = _build_loader(
-        train_data, train_label_indices, train_indices, batch_size, shuffle=True
-    )
-    mlp_val_loader = _build_loader(
-        train_data, train_label_indices, val_indices, batch_size, shuffle=False
-    )
-    mlp_test_loader = _build_loader(
-        test_data,
-        test_label_indices,
-        list(range(len(test_label_indices))),
-        batch_size,
-        shuffle=False,
-    )
 
     feature_models = {
         "vision_model_1": vision_model_1,
@@ -471,8 +621,82 @@ def train_mlp_classifier(
         "mantis_model": mantis_model,
         "moment_model": moment_model,
     }
+    train_features = _get_feature_split(
+        "train",
+        train_loader,
+        train_labels,
+        feature_models,
+        channels,
+        device,
+        feature_cache_dir,
+        feature_cache_signature,
+    )
+    test_features = _get_feature_split(
+        "test",
+        test_loader,
+        test_labels,
+        feature_models,
+        channels,
+        device,
+        feature_cache_dir,
+        feature_cache_signature,
+    )
+    if has_fixed_validation:
+        val_label_indices = _map_labels(val_labels, class_to_idx)
+        val_features = _get_feature_split(
+            "vali",
+            val_loader,
+            val_labels,
+            feature_models,
+            channels,
+            device,
+            feature_cache_dir,
+            feature_cache_signature,
+        )
 
-    feature_dims = _infer_feature_dim(feature_models, train_data, channels, device)
+    # Feature extraction and cache misses may consume RNG state. Reset here so
+    # classifier initialization and training depend only on the outer seed.
+    set_random_seed(random_seed)
+
+    if has_fixed_validation:
+        mlp_train_loader = _build_feature_loader(
+            train_features,
+            train_label_indices,
+            train_indices,
+            batch_size,
+            shuffle=True,
+        )
+        mlp_val_loader = _build_feature_loader(
+            val_features,
+            val_label_indices,
+            val_indices,
+            batch_size,
+            shuffle=False,
+        )
+    else:
+        mlp_train_loader = _build_feature_loader(
+            train_features,
+            train_label_indices,
+            train_indices,
+            batch_size,
+            shuffle=True,
+        )
+        mlp_val_loader = _build_feature_loader(
+            train_features,
+            train_label_indices,
+            val_indices,
+            batch_size,
+            shuffle=False,
+        )
+    mlp_test_loader = _build_feature_loader(
+        test_features,
+        test_label_indices,
+        list(range(len(test_label_indices))),
+        batch_size,
+        shuffle=False,
+    )
+
+    feature_dims = _infer_feature_dim(train_features)
     fusion_module = FusionModule(
         branch_dims=feature_dims,
         modal_interaction=modal_interaction,
@@ -491,13 +715,21 @@ def train_mlp_classifier(
 
     parameters = list(mlp.parameters())
     parameters.extend(fusion_module.parameters())
-    for model in feature_models.values():
-        if model is not None:
-            for param in model.parameters():
-                param.requires_grad = False
 
     optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay)
-    criterion = nn.CrossEntropyLoss()
+    if class_weight == "balanced":
+        criterion_weights = _balanced_class_weights(
+            train_label_indices[train_indices], len(classes), device
+        )
+        print(
+            "MLP class weights: "
+            + ", ".join(f"{weight:.4f}" for weight in criterion_weights.tolist())
+        )
+    elif class_weight == "none":
+        criterion_weights = None
+    else:
+        raise ValueError(f"Unsupported MLP class weighting: {class_weight}")
+    criterion = nn.CrossEntropyLoss(weight=criterion_weights)
 
     if modal_interaction == "masked_pretrain" and pretrain_epochs > 0:
         pretrain_optimizer = torch.optim.AdamW(
@@ -506,9 +738,7 @@ def train_mlp_classifier(
         for epoch in range(pretrain_epochs):
             loss = _run_masked_pretrain_epoch(
                 fusion_module=fusion_module,
-                feature_models=feature_models,
                 loader=mlp_train_loader,
-                channels=channels,
                 optimizer=pretrain_optimizer,
                 device=device,
                 mask_prob=mask_prob,
@@ -526,9 +756,7 @@ def train_mlp_classifier(
         loss, gate_mean = _run_epoch(
             mlp=mlp,
             fusion_module=fusion_module,
-            feature_models=feature_models,
             loader=mlp_train_loader,
-            channels=channels,
             criterion=criterion,
             optimizer=optimizer,
             device=device,
@@ -542,7 +770,7 @@ def train_mlp_classifier(
 
         if early_stop_patience > 0:
             val_metrics = _evaluate(
-                mlp, fusion_module, feature_models, mlp_val_loader, channels, classes, device
+                mlp, fusion_module, mlp_val_loader, classes, device
             )
             val_score = val_metrics["macro_f1"]
             if val_score > best_val_score:
@@ -570,10 +798,10 @@ def train_mlp_classifier(
 
     if val_metrics is None or best_state is not None:
         val_metrics = _evaluate(
-            mlp, fusion_module, feature_models, mlp_val_loader, channels, classes, device
+            mlp, fusion_module, mlp_val_loader, classes, device
         )
     test_metrics = _evaluate(
-        mlp, fusion_module, feature_models, mlp_test_loader, channels, classes, device
+        mlp, fusion_module, mlp_test_loader, classes, device
     )
 
     return val_metrics, test_metrics, train_indices, val_indices

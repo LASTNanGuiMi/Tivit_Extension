@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 
-CONDITIONS = (
+DEFAULT_CONDITIONS = (
     "vision_line_plot",
     "vision_activity_graph",
     "timeseries_mantis",
@@ -32,6 +32,12 @@ def parse_args():
     parser.add_argument("--seeds", required=True, nargs="+", type=int)
     parser.add_argument("--repeats", required=True, type=int)
     parser.add_argument("--datasets", required=True, nargs="+", choices=DATASET_NAMES)
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        choices=DEFAULT_CONDITIONS,
+        default=DEFAULT_CONDITIONS,
+    )
     parser.add_argument("--status-dir", type=Path)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--output", required=True, type=Path)
@@ -56,9 +62,9 @@ def wait_for_workers(status_dir, workers, poll_seconds):
         time.sleep(poll_seconds)
 
 
-def load_records(root, seeds, repeats, datasets):
+def load_records(root, seeds, repeats, datasets, conditions):
     records = {}
-    for condition in CONDITIONS:
+    for condition in conditions:
         for seed in seeds:
             for repeat in range(1, repeats + 1):
                 run_dir = root / condition / f"seed_{seed}" / f"repeat_{repeat}"
@@ -81,7 +87,7 @@ def load_records(root, seeds, repeats, datasets):
 
     expected = {
         (condition, DATASET_NAMES[dataset], seed, repeat)
-        for condition in CONDITIONS
+        for condition in conditions
         for dataset in datasets
         for seed in seeds
         for repeat in range(1, repeats + 1)
@@ -92,11 +98,11 @@ def load_records(root, seeds, repeats, datasets):
     return records
 
 
-def aggregate(records, seeds, repeats, datasets):
+def aggregate(records, seeds, repeats, datasets, conditions):
     rows = []
     for dataset_group in datasets:
         dataset = DATASET_NAMES[dataset_group]
-        for condition in CONDITIONS:
+        for condition in conditions:
             keys = [
                 (condition, dataset, seed, repeat)
                 for seed in seeds
@@ -119,8 +125,20 @@ def aggregate(records, seeds, repeats, datasets):
 def main():
     args = parse_args()
     wait_for_workers(args.status_dir, args.workers, args.poll_seconds)
-    records = load_records(args.result_root, args.seeds, args.repeats, args.datasets)
-    rows = aggregate(records, args.seeds, args.repeats, args.datasets)
+    records = load_records(
+        args.result_root,
+        args.seeds,
+        args.repeats,
+        args.datasets,
+        args.conditions,
+    )
+    rows = aggregate(
+        records,
+        args.seeds,
+        args.repeats,
+        args.datasets,
+        args.conditions,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))

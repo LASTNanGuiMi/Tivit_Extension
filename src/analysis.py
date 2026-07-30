@@ -73,7 +73,7 @@ def measure_alignment(
     result_dir,
 ):
     embeddings = [
-        torch.cat([torch.from_numpy(v[0]), torch.from_numpy(v[1])], dim=0)
+        torch.cat([torch.from_numpy(split) for split in v], dim=0)
         for v in [
             mantis_embedding,
             moment_embedding,

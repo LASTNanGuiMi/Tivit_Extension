@@ -143,6 +143,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--mlp_class_weight",
+        choices=["none", "balanced"],
+        default="none",
+        help="Optional inverse-frequency class weighting for MLP training",
+    )
+
+    parser.add_argument(
         "--mlp_epochs",
         type=int,
         default=20,
@@ -203,8 +210,19 @@ def parse_args():
     parser.add_argument(
         "--datasets",
         type=str,
-        choices=["ucr", "uea", "uci", "falltl", "feng"],
+        choices=["ucr", "uea", "uci", "flaap", "falltl", "feng", "aaai27"],
         help="Time series classification benchmark",
+    )
+
+    parser.add_argument(
+        "--har_channels",
+        type=str,
+        choices=["all", "acc_gyro"],
+        default="all",
+        help=(
+            "Channel subset for FLAAP/UCI-HAR. acc_gyro uses Acc XYZ plus "
+            "Gyro XYZ; for UCI-HAR, Acc XYZ means total_acc XYZ."
+        ),
     )
 
     parser.add_argument(
@@ -212,6 +230,36 @@ def parse_args():
         type=str,
         nargs="+",
         help="Optional dataset names to run within the selected benchmark",
+    )
+
+    parser.add_argument(
+        "--aaai27_label_mode",
+        choices=["original", "zero_vs_rest"],
+        default="original",
+        help=(
+            "AAAI27 label mapping. zero_vs_rest keeps label 0 as class 0 and "
+            "maps original labels 1 and 2 to class 1."
+        ),
+    )
+
+    parser.add_argument(
+        "--falltl_protocol",
+        choices=["legacy_windows", "comparison_binary"],
+        default="legacy_windows",
+        help=(
+            "FallTL data protocol. comparison_binary matches the baseline loader: "
+            "one resampled sequence per CSV, D/F binary labels, and a fixed "
+            "seed-42 60/20/20 stratified split."
+        ),
+    )
+
+    parser.add_argument(
+        "--feature_cache_dir",
+        type=str,
+        help=(
+            "Optional directory for frozen model-layer features. Cached split "
+            "features are reused by subsequent runs with matching labels and branches."
+        ),
     )
 
     parser.add_argument(
@@ -296,7 +344,10 @@ def parse_args():
     parser.add_argument(
         "--max_windows_per_file",
         type=int,
-        help="Optional maximum number of windows to keep from each Feng CSV file",
+        help=(
+            "Optional maximum number of windows to keep from each Feng or "
+            "legacy FallTL CSV file"
+        ),
     )
 
     parser.add_argument(

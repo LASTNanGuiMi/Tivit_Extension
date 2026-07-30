@@ -23,7 +23,14 @@ from src.analysis import (
 )
 from src.arguments import parse_args
 from src.classifier import train_classifier
-from src.datautils import get_dataloader
+from src.datautils import (
+    AAAI27_DATASET_NAMES,
+    get_falltl_comparison_dataloaders,
+    get_aaai27_dataloaders,
+    get_dataloader,
+    write_falltl_comparison_split_audit,
+    write_aaai27_split_audit,
+)
 from src.embedding import concat_embeddings, embed
 from src.mlp_classifier import train_mlp_classifier
 from src.tivit import get_tivit
@@ -39,6 +46,56 @@ from src.utils import (
 
 def model_slug(model_name):
     return os.path.basename(os.path.normpath(model_name)).replace("-", "_")
+
+
+def embed_loader_splits(
+    model,
+    model_type,
+    channels,
+    device,
+    train_loader,
+    test_loader,
+    vali_loader=None,
+):
+    loaders = [train_loader]
+    if vali_loader is not None:
+        loaders.append(vali_loader)
+    loaders.append(test_loader)
+    return tuple(
+        embed(model, loader, model_type, channels, device) for loader in loaders
+    )
+
+
+def build_feature_cache_signature(args, dataset, channels, patch_size):
+    has_fixed_split = args.datasets == "aaai27" or (
+        args.datasets == "falltl" and args.falltl_protocol == "comparison_binary"
+    )
+    configuration = {
+        "schema": 2,
+        "dataset_group": args.datasets,
+        "dataset": dataset,
+        "dataset_names": args.dataset_names,
+        "channels": channels,
+        "label_mode": args.aaai27_label_mode,
+        "falltl_protocol": args.falltl_protocol,
+        "har_channels": args.har_channels,
+        "split_seed": 42 if has_fixed_split else args.random_seed,
+        "custom_test_ratio": args.custom_test_ratio,
+        "window_size": args.window_size,
+        "window_stride": args.window_stride,
+        "max_windows_per_file": args.max_windows_per_file,
+        "image_mode": args.image_mode,
+        "aggregation": args.aggregation,
+        "patch_size": patch_size,
+        "stride": args.stride,
+        "vit_1_name": args.vit_1_name,
+        "vit_1_layer": args.vit_1_layer,
+        "vit_2_name": args.vit_2_name,
+        "vit_2_layer": args.vit_2_layer,
+        "mantis_name": args.mantis_name if args.mantis else None,
+        "moment": args.moment,
+    }
+    return json.dumps(configuration, sort_keys=True, separators=(",", ":"))
 
 
 if __name__ == "__main__":
@@ -98,12 +155,19 @@ if __name__ == "__main__":
         datasets = multivariate
     elif args.datasets == "uci":
         datasets = ["UCIHAR"]
+    elif args.datasets == "flaap":
+        datasets = ["FLAAP"]
     elif args.datasets == "falltl":
         datasets = ["FallTL"]
     elif args.datasets == "feng":
         datasets = ["Feng"]
+    elif args.datasets == "aaai27":
+        datasets = list(AAAI27_DATASET_NAMES)
     else:
-        raise ValueError("Only UCR, UEA, UCI, FallTL, and Feng benchmark available.")
+        raise ValueError(
+            "Only UCR, UEA, UCI, FLAAP, FallTL, Feng, and AAAI27 benchmarks "
+            "are available."
+        )
 
     if args.dataset_names:
         unavailable = sorted(set(args.dataset_names) - set(datasets))
@@ -116,11 +180,45 @@ if __name__ == "__main__":
     for dataset in tqdm(datasets):
         print(dataset)
 
-        train_loader, train_labels, test_loader, test_labels = get_dataloader(
-            dataset, args
-        )
+        fixed_validation_split = False
+        vali_loader = None
+        vali_labels = None
+        if args.datasets == "aaai27":
+            fixed_validation_split = True
+            aaai27_bundle = get_aaai27_dataloaders(dataset, args)
+            train_loader = aaai27_bundle.train_loader
+            train_labels = aaai27_bundle.train_labels
+            vali_loader = aaai27_bundle.vali_loader
+            vali_labels = aaai27_bundle.vali_labels
+            test_loader = aaai27_bundle.test_loader
+            test_labels = aaai27_bundle.test_labels
+            audit_path = write_aaai27_split_audit(aaai27_bundle, result_dir)
+            print(f"Subject split audit: {audit_path}")
+        elif (
+            args.datasets == "falltl"
+            and args.falltl_protocol == "comparison_binary"
+        ):
+            fixed_validation_split = True
+            falltl_bundle = get_falltl_comparison_dataloaders(args)
+            train_loader = falltl_bundle.train_loader
+            train_labels = falltl_bundle.train_labels
+            vali_loader = falltl_bundle.vali_loader
+            vali_labels = falltl_bundle.vali_labels
+            test_loader = falltl_bundle.test_loader
+            test_labels = falltl_bundle.test_labels
+            audit_path = write_falltl_comparison_split_audit(
+                falltl_bundle, result_dir
+            )
+            print(f"FallTL split audit: {audit_path}")
+        else:
+            train_loader, train_labels, test_loader, test_labels = get_dataloader(
+                dataset, args
+            )
 
-        print("Samples: ", len(train_loader.dataset) + len(test_loader.dataset))
+        sample_count = len(train_loader.dataset) + len(test_loader.dataset)
+        if vali_loader is not None:
+            sample_count += len(vali_loader.dataset)
+        print("Samples: ", sample_count)
         if args.image_mode == "activity_graph":
             save_activity_graph_samples(
                 result_dir=result_dir,
@@ -160,9 +258,14 @@ if __name__ == "__main__":
                 mantis_model = network
             else:
                 mantis_model = MantisTrainer(device=device, network=network)
-                mantis_embedding = (
-                    embed(mantis_model, train_loader, "mantis", channels, device),
-                    embed(mantis_model, test_loader, "mantis", channels, device),
+                mantis_embedding = embed_loader_splits(
+                    mantis_model,
+                    "mantis",
+                    channels,
+                    device,
+                    train_loader,
+                    test_loader,
+                    vali_loader=vali_loader,
                 )
 
         # Embedding with MOMENT TSFM
@@ -177,9 +280,14 @@ if __name__ == "__main__":
             moment_model = moment
 
             if args.classifier_type != "mlp":
-                moment_embedding = (
-                    embed(moment, train_loader, "moment", channels, device),
-                    embed(moment, test_loader, "moment", channels, device),
+                moment_embedding = embed_loader_splits(
+                    moment,
+                    "moment",
+                    channels,
+                    device,
+                    train_loader,
+                    test_loader,
+                    vali_loader=vali_loader,
                 )
 
         patch_sizes = get_patch_size(patch_size=args.patch_size, T=T)
@@ -212,9 +320,14 @@ if __name__ == "__main__":
                 tivit_1.eval()
 
                 if args.classifier_type != "mlp":
-                    vision_embedding_1 = (
-                        embed(tivit_1, train_loader, "tivit", channels, device),
-                        embed(tivit_1, test_loader, "tivit", channels, device),
+                    vision_embedding_1 = embed_loader_splits(
+                        tivit_1,
+                        "tivit",
+                        channels,
+                        device,
+                        train_loader,
+                        test_loader,
+                        vali_loader=vali_loader,
                     )
 
             # Embedding with TiViT (2nd ViT configuration)
@@ -231,9 +344,14 @@ if __name__ == "__main__":
                 tivit_2.eval()
 
                 if args.classifier_type != "mlp":
-                    vision_embedding_2 = (
-                        embed(tivit_2, train_loader, "tivit", channels, device),
-                        embed(tivit_2, test_loader, "tivit", channels, device),
+                    vision_embedding_2 = embed_loader_splits(
+                        tivit_2,
+                        "tivit",
+                        channels,
+                        device,
+                        train_loader,
+                        test_loader,
+                        vali_loader=vali_loader,
                     )
 
             # Linear classification
@@ -255,6 +373,7 @@ if __name__ == "__main__":
                             dropout=args.mlp_dropout,
                             lr=args.mlp_lr,
                             weight_decay=args.mlp_weight_decay,
+                            class_weight=args.mlp_class_weight,
                             epochs=args.mlp_epochs,
                             early_stop_patience=args.mlp_early_stop_patience,
                             modal_interaction=args.modal_interaction,
@@ -267,15 +386,34 @@ if __name__ == "__main__":
                             vision_model_2=tivit_2 if args.vit_2_name else None,
                             mantis_model=mantis_model,
                             moment_model=moment_model,
+                            val_loader=vali_loader,
+                            val_labels=vali_labels,
+                            feature_cache_dir=(
+                                os.path.join(args.feature_cache_dir, dataset)
+                                if args.feature_cache_dir
+                                else None
+                            ),
+                            feature_cache_signature=build_feature_cache_signature(
+                                args,
+                                dataset,
+                                channels,
+                                p,
+                            ),
                         )
                     )
                 else:
-                    train_embeds, test_embeds = concat_embeddings(
+                    combined_embeddings = concat_embeddings(
                         vision_embedding_1,
                         vision_embedding_2,
                         mantis_embedding,
                         moment_embedding,
                     )
+
+                    if fixed_validation_split:
+                        train_embeds, vali_embeds, test_embeds = combined_embeddings
+                    else:
+                        train_embeds, test_embeds = combined_embeddings
+                        vali_embeds = None
 
                     val_metrics, test_metrics, train_indices, val_indices = train_classifier(
                         train_embeds,
@@ -285,6 +423,8 @@ if __name__ == "__main__":
                         args.classifier_type,
                         args.random_seed,
                         args.val_ratio,
+                        val_embeds=vali_embeds,
+                        val_labels=vali_labels,
                     )
                 print(
                     "Val metrics: "
@@ -301,14 +441,15 @@ if __name__ == "__main__":
                     )
                 )
 
-                write_split_indices(
-                    result_dir=result_dir,
-                    dataset=dataset,
-                    train_indices=train_indices,
-                    val_indices=val_indices,
-                    random_seed=args.random_seed,
-                    val_ratio=args.val_ratio,
-                )
+                if not fixed_validation_split:
+                    write_split_indices(
+                        result_dir=result_dir,
+                        dataset=dataset,
+                        train_indices=train_indices,
+                        val_indices=val_indices,
+                        random_seed=args.random_seed,
+                        val_ratio=args.val_ratio,
+                    )
 
                 write_result_table(
                     result_dir=result_dir,

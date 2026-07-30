@@ -116,17 +116,35 @@ def train_classifier(
     classifier_type,
     random_seed,
     val_ratio,
+    val_embeds=None,
+    val_labels=None,
 ):
-    train, val = utils.get_split(
-        train_embeds,
-        frac=val_ratio,
-        random_seed=random_seed,
-    )
+    has_fixed_validation = val_embeds is not None or val_labels is not None
+    if has_fixed_validation and (val_embeds is None or val_labels is None):
+        raise ValueError("val_embeds and val_labels must be provided together")
+
+    if has_fixed_validation:
+        train = list(range(len(train_embeds)))
+        val = list(range(len(val_embeds)))
+        fit_embeds = train_embeds
+        fit_labels = train_labels
+        validation_embeds = val_embeds
+        validation_labels = val_labels
+    else:
+        train, val = utils.get_split(
+            train_embeds,
+            frac=val_ratio,
+            random_seed=random_seed,
+        )
+        fit_embeds = train_embeds[train]
+        fit_labels = train_labels[train]
+        validation_embeds = train_embeds[val]
+        validation_labels = train_labels[val]
 
     clf = get_classifier(classifier_type, random_seed=random_seed)
-    clf.fit(train_embeds[train], train_labels[train].ravel())
+    clf.fit(fit_embeds, fit_labels.ravel())
 
-    val_metrics = compute_metrics(clf, train_embeds[val], train_labels[val])
+    val_metrics = compute_metrics(clf, validation_embeds, validation_labels)
     test_metrics = compute_metrics(clf, test_embeds, test_labels)
 
     return val_metrics, test_metrics, train, val

@@ -30,13 +30,26 @@ esac
 
 read -r -a SEED_VALUES <<< "$SEEDS"
 read -r -a DATASET_VALUES <<< "$DATASET_GROUPS"
-CONDITIONS=(
-  vision_line_plot
-  vision_activity_graph
-  timeseries_mantis
-  multimodal_concat
-  multimodal_proposed
-)
+read -r -a CONDITIONS <<< "$ABLATION_CONDITIONS"
+
+if (( ${#SEED_VALUES[@]} != 1 )) || [[ "${SEED_VALUES[0]}" != "$FIXED_ABLATION_SEED" ]]; then
+  echo "Feature ablation requires exactly one seed: $FIXED_ABLATION_SEED; got: $SEEDS" >&2
+  exit 1
+fi
+
+(( ${#CONDITIONS[@]} > 0 )) || { echo "No ablation conditions supplied." >&2; exit 1; }
+declare -A SEEN_CONDITIONS=()
+for condition in "${CONDITIONS[@]}"; do
+  case "$condition" in
+    vision_line_plot|vision_activity_graph|timeseries_mantis|multimodal_concat|multimodal_proposed) ;;
+    *) echo "Invalid ablation condition: $condition" >&2; exit 1 ;;
+  esac
+  [[ -z "${SEEN_CONDITIONS[$condition]+x}" ]] || {
+    echo "Duplicate ablation condition: $condition" >&2
+    exit 1
+  }
+  SEEN_CONDITIONS[$condition]=1
+done
 
 for seed in "${SEED_VALUES[@]}"; do
   [[ "$seed" =~ ^[0-9]+$ ]] || { echo "Invalid seed: $seed" >&2; exit 1; }
@@ -81,9 +94,17 @@ TIMESERIES_ARGS=(--mantis --mantis_name "$MANTIS_DIR")
 
 result_complete() {
   local task_result=$1
+  local dataset_group=$2
+  local expected_dataset
   local result_csv
+  case "$dataset_group" in
+    feng) expected_dataset=Feng ;;
+    falltl) expected_dataset=FallTL ;;
+    uci) expected_dataset=UCIHAR ;;
+  esac
   for result_csv in "$task_result"/*/train_val.csv; do
-    if [[ -s "$result_csv" ]] && (( $(wc -l < "$result_csv") >= 2 )); then
+    if [[ -s "$result_csv" ]] &&
+      awk -F, -v expected="$expected_dataset" 'NR > 1 && $1 == expected { found = 1 } END { exit !found }' "$result_csv"; then
       return 0
     fi
   done
@@ -145,7 +166,7 @@ run_task() {
       ;;
   esac
 
-  if result_complete "$task_result"; then
+  if result_complete "$task_result" "$dataset_group"; then
     echo "Skip completed | repeat=$repeat | seed=$seed | $dataset_group | $condition"
     return
   fi

@@ -176,6 +176,10 @@ cython_debug/
 data/
 outputs/
 results/
+logs/
+feature_cache/
+models/
+checkpoints/
 activity_graph_samples/
 Mantis-8M/
 tmp_dataset_downloads/
@@ -186,6 +190,9 @@ Extra/outputs/
 
 .vscode/launch.json
 .vscode/settings.json
+.idea/
+.DS_Store
+*.swp
 
 # Local experiment logs and downloaded datasets
 *.log

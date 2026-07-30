@@ -80,10 +80,16 @@ def concat_embeddings(
     if len(embeddings) == 0:
         raise ValueError("At least one embedding is required.")
 
-    embeds_train = [e[0] for e in embeddings]
-    embeds_test = [e[1] for e in embeddings]
+    split_counts = {len(embedding) for embedding in embeddings}
+    if len(split_counts) != 1:
+        raise ValueError(
+            f"Embedding branches have different split counts: {sorted(split_counts)}"
+        )
 
-    embeds_train = np.concatenate(embeds_train, axis=1)
-    embeds_test = np.concatenate(embeds_test, axis=1)
-
-    return embeds_train, embeds_test
+    split_count = split_counts.pop()
+    return tuple(
+        np.concatenate(
+            [embedding[split_index] for embedding in embeddings], axis=1
+        )
+        for split_index in range(split_count)
+    )
