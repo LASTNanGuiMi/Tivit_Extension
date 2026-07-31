@@ -13,9 +13,9 @@ OUTER_SEEDS="${OUTER_SEEDS:-2020 2021 2022 2023 2024}"
 SEED="${SEED:-2022}"
 REPEATS="${REPEATS:-3}"
 TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
-SESSION="${SESSION:-latest_datasets_${TIMESTAMP}}"
-RESULT_ROOT="${RESULT_ROOT:-$SERVER_ROOT/results/latest_datasets_${TIMESTAMP}}"
-LOG_DIR="${LOG_DIR:-$SERVER_ROOT/logs/latest_datasets_${TIMESTAMP}}"
+SESSION="${SESSION:-tivit_latest_datasets_${TIMESTAMP}}"
+RESULT_ROOT="${RESULT_ROOT:-$SERVER_ROOT/results/tivit_latest_datasets_${TIMESTAMP}}"
+LOG_DIR="${LOG_DIR:-$SERVER_ROOT/logs/tivit_latest_datasets_${TIMESTAMP}}"
 STATUS_DIR="$LOG_DIR/status"
 UNIMODAL_CACHE_ROOT="${UNIMODAL_CACHE_ROOT:-$SERVER_ROOT/feature_cache/aaai27_binary_remaining_ablation_seed2022}"
 MULTIMODAL_CACHE_ROOT="${MULTIMODAL_CACHE_ROOT:-$SERVER_ROOT/feature_cache/aaai27_binary_activity_graph_clip_h14_mantis8m}"
@@ -167,6 +167,7 @@ tmux new-window -d -t "$SESSION" -n summary "$summary_command"
 
 cat <<EOF
 Started tmux session: $SESSION
+Scope: TiVit main.py experiments only (external baselines are excluded)
 Targets: $TARGETS
 GPUs: $GPUS
 Total tasks: $total_tasks

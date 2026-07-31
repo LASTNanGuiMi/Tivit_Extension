@@ -26,12 +26,14 @@ The scripts contain research-server defaults for convenience. Always override
 them on another machine. Generated results, logs, model files, and feature caches
 must remain outside version control.
 
-## Latest Four-Dataset Suite
+## Latest TiVit Four-Dataset Suite
 
 Use `scripts/run_latest_datasets_tmux.sh` as the single entry point for the
-submission experiments on PADS, Shimmer, FallTL, and UCIHAR. The defaults were
-copied from the most recent completed experiment for each dataset family, rather
-than normalizing the four families to one hyperparameter set:
+TiVit submission experiments on PADS, Shimmer, FallTL, and UCIHAR. This suite
+only invokes the local `main.py`; Medformer and all other external baselines are
+intentionally excluded. The defaults were copied from the most recent completed
+TiVit experiment for each dataset family, rather than normalizing the four
+families to one hyperparameter set:
 
 | Target | Reference experiment | Reproduced protocol |
 | --- | --- | --- |
