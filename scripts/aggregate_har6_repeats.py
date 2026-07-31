@@ -34,13 +34,6 @@ def parse_args():
     parser.add_argument("--status-dir", required=True, type=Path)
     parser.add_argument("--workers", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
-        "--datasets",
-        nargs="+",
-        choices=tuple(DATASETS),
-        default=list(DATASETS),
-        help="Dataset keys to aggregate (default: flaap uci)",
-    )
     parser.add_argument("--poll-seconds", type=int, default=60)
     return parser.parse_args()
 
@@ -87,11 +80,10 @@ def load_task_record(task_dir, expected_dataset, expected_fusion):
     return {metric: float(matches[0][1][metric]) for metric in METRICS}
 
 
-def load_records(result_root, repeats, datasets=tuple(DATASETS)):
+def load_records(result_root, repeats):
     records = {}
     for repeat in range(1, repeats + 1):
-        for dataset_key in datasets:
-            dataset_name = DATASETS[dataset_key]
+        for dataset_key, dataset_name in DATASETS.items():
             for fusion in FUSIONS:
                 task_dir = result_root / dataset_key / f"repeat_{repeat}" / fusion
                 if not task_dir.is_dir():
@@ -104,10 +96,9 @@ def load_records(result_root, repeats, datasets=tuple(DATASETS)):
     return records
 
 
-def aggregate(records, repeats, datasets=tuple(DATASETS)):
+def aggregate(records, repeats):
     rows = []
-    for dataset_key in datasets:
-        dataset_name = DATASETS[dataset_key]
+    for dataset_name in DATASETS.values():
         for fusion in FUSIONS:
             row = {
                 "dataset": dataset_name,
@@ -132,15 +123,8 @@ def aggregate(records, repeats, datasets=tuple(DATASETS)):
 
 def main():
     args = parse_args()
-    if len(set(args.datasets)) != len(args.datasets):
-        raise ValueError("Provide each dataset at most once")
-    datasets = tuple(args.datasets)
     wait_for_workers(args.status_dir, args.workers, args.poll_seconds)
-    rows = aggregate(
-        load_records(args.result_root, args.repeats, datasets),
-        args.repeats,
-        datasets,
-    )
+    rows = aggregate(load_records(args.result_root, args.repeats), args.repeats)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
