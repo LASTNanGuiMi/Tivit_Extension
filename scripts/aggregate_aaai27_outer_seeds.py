@@ -62,6 +62,13 @@ def parse_args():
     parser.add_argument("--workers", required=True, type=int)
     parser.add_argument("--outer-seeds", required=True, nargs="+", type=int)
     parser.add_argument("--split-reference", required=True, type=Path)
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=DATASETS,
+        default=list(DATASETS),
+        help="AAAI27 datasets to aggregate (default: all PADS and Shimmer tasks)",
+    )
     parser.add_argument("--poll-seconds", type=int, default=30)
     return parser.parse_args()
 
@@ -170,9 +177,9 @@ def write_csv(path, rows):
     print(f"Wrote {len(rows)} rows to {path}")
 
 
-def aggregate(records, outer_seeds):
+def aggregate(records, outer_seeds, datasets=DATASETS):
     rows = []
-    for dataset in DATASETS:
+    for dataset in datasets:
         for condition in CONDITIONS:
             group = [
                 records[(seed, dataset, condition)]
@@ -202,6 +209,9 @@ def main():
     args = parse_args()
     if len(args.outer_seeds) < 2 or len(set(args.outer_seeds)) != len(args.outer_seeds):
         raise ValueError("Provide at least two unique outer seeds")
+    if len(set(args.datasets)) != len(args.datasets):
+        raise ValueError("Provide each dataset at most once")
+    datasets = tuple(args.datasets)
     if args.split_reference.name != "split_reference_seed42.csv":
         raise ValueError(f"Expected the fixed seed-42 split reference: {args.split_reference}")
     if not args.split_reference.is_file():
@@ -216,12 +226,12 @@ def main():
             seed,
         )
         for seed in args.outer_seeds
-        for dataset in DATASETS
+        for dataset in datasets
         for condition in CONDITIONS
     }
 
     audit_hashes = {}
-    for dataset in DATASETS:
+    for dataset in datasets:
         hashes = {
             records[(seed, dataset, condition)]["split_audit_sha256"]
             for seed in args.outer_seeds
@@ -234,10 +244,10 @@ def main():
     raw_rows = [
         records[(seed, dataset, condition)]
         for seed in args.outer_seeds
-        for dataset in DATASETS
+        for dataset in datasets
         for condition in CONDITIONS
     ]
-    summary_rows = aggregate(records, args.outer_seeds)
+    summary_rows = aggregate(records, args.outer_seeds, datasets)
     write_csv(args.result_root / "all_runs.csv", raw_rows)
     write_csv(args.result_root / "condition_mean_std.csv", summary_rows)
     write_csv(
@@ -258,7 +268,7 @@ def main():
         "split_reference": str(args.split_reference),
         "split_reference_sha256": sha256(args.split_reference),
         "split_audit_sha256_by_dataset": audit_hashes,
-        "datasets": list(DATASETS),
+        "datasets": list(datasets),
         "conditions": list(CONDITIONS),
         "runs": len(raw_rows),
         "rng_reset_after_feature_loading": True,

@@ -26,6 +26,42 @@ The scripts contain research-server defaults for convenience. Always override
 them on another machine. Generated results, logs, model files, and feature caches
 must remain outside version control.
 
+## Latest Four-Dataset Suite
+
+Use `scripts/run_latest_datasets_tmux.sh` as the single entry point for the
+submission experiments on PADS, Shimmer, FallTL, and UCIHAR. The defaults were
+copied from the most recent completed experiment for each dataset family, rather
+than normalizing the four families to one hyperparameter set:
+
+| Target | Reference experiment | Reproduced protocol |
+| --- | --- | --- |
+| `pads` | `aaai27_outer_seed5_split42_rngreset_20260729` | PADS 9/10, fixed subject split seed 42, outer seeds 2020-2024, seven ablation conditions |
+| `shimmer` | `aaai27_outer_seed5_split42_rngreset_20260729` | Shimmer 11/12, fixed subject split seed 42, outer seeds 2020-2024, seven ablation conditions |
+| `falltl` | `falltl_comparison_binary_main_seed2022_20260729` | Comparison-binary labels, seed 2022, four fusion modes, shared frozen-feature cache |
+| `ucihar` | `har6_seed2022_3repeat_20260725_152033` | Total acceleration XYZ plus body gyroscope XYZ, seed 2022, three repeats, four fusion modes |
+
+Run the complete 156-task suite with one GPU pool:
+
+```bash
+GPUS="0 1 2 3 4" \
+TARGETS="pads shimmer falltl ucihar" \
+WAIT_FOR_GPU_FREE=1 \
+bash scripts/run_latest_datasets_tmux.sh
+```
+
+`TARGETS` can select any subset without changing its protocol. For example,
+`TARGETS="falltl ucihar"` runs only those two families. Use `DRY_RUN=1` to print
+the exact task queue without creating a tmux session or starting training:
+
+```bash
+GPUS="0" TARGETS="pads" DRY_RUN=1 \
+bash scripts/run_latest_datasets_tmux.sh
+```
+
+Results are grouped under `aaai27/`, `falltl/`, and `har6/` in one result root.
+The matching aggregators run automatically after every worker succeeds. FallTL's
+concat task is the cache producer; the other three fusion tasks wait for it.
+
 ## General Benchmarks
 
 | Launcher | Scope | Notes |
