@@ -90,11 +90,11 @@ def validate_dataset(dataset_name, data_dir, batch_size, label_mode):
         original_labels = np.asarray(source_dataset.y, dtype=np.int64)
         expected_labels = (
             (original_labels != 0).astype(np.int64)
-            if label_mode == "zero_vs_rest"
+            if label_mode == "shimmer_hc_vs_pd"
             else original_labels
         )
         np.testing.assert_array_equal(labels, expected_labels)
-        if label_mode == "zero_vs_rest" and set(np.unique(labels)) != {0, 1}:
+        if label_mode == "shimmer_hc_vs_pd" and set(np.unique(labels)) != {0, 1}:
             raise AssertionError(
                 f"{dataset_name} {split}: expected binary labels, got "
                 f"{np.unique(labels).tolist()}"
@@ -118,29 +118,16 @@ def validate_dataset(dataset_name, data_dir, batch_size, label_mode):
             raise AssertionError(
                 f"{dataset_name} {split}: batch shape={tuple(batch.shape)}"
             )
-        np.testing.assert_array_equal(
-            batch.numpy(),
-            source_dataset.X[:expected_batch].transpose(0, 2, 1),
-        )
         if not torch.isfinite(batch).all():
             raise AssertionError(f"{dataset_name} {split}: non-finite batch")
-        channel_means = batch.mean(dim=-1)
-        if not torch.allclose(
-            channel_means, torch.zeros_like(channel_means), atol=1e-5
-        ):
-            raise AssertionError(
-                f"{dataset_name} {split}: per-sample channel means are not zero"
-            )
-        channel_stds = batch.std(dim=-1, unbiased=False)
-        nonconstant = channel_stds > 1e-6
-        if nonconstant.any() and not torch.allclose(
-            channel_stds[nonconstant],
-            torch.ones_like(channel_stds[nonconstant]),
-            atol=1e-4,
-        ):
-            raise AssertionError(
-                f"{dataset_name} {split}: per-sample channel stds are not one"
-            )
+
+    train_tensor = bundle.train_loader.dataset.tensors[0]
+    channel_means = train_tensor.mean(dim=(0, 2))
+    channel_stds = train_tensor.std(dim=(0, 2), unbiased=False)
+    if not torch.allclose(channel_means, torch.zeros_like(channel_means), atol=1e-5):
+        raise AssertionError(f"{dataset_name}: training channel means are not zero")
+    if not torch.allclose(channel_stds, torch.ones_like(channel_stds), atol=1e-4):
+        raise AssertionError(f"{dataset_name}: training channel stds are not one")
 
     with tempfile.TemporaryDirectory(prefix="aaai27_audit_") as temp_dir:
         audit_path = write_aaai27_split_audit(bundle, temp_dir)
@@ -155,7 +142,7 @@ def validate_dataset(dataset_name, data_dir, batch_size, label_mode):
             original_label = int(row["original_label_id"])
             expected_label = (
                 int(original_label != 0)
-                if label_mode == "zero_vs_rest"
+                if label_mode == "shimmer_hc_vs_pd"
                 else original_label
             )
             if int(row["label_id"]) != expected_label:
@@ -171,23 +158,20 @@ def validate_dataset(dataset_name, data_dir, batch_size, label_mode):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Validate the seven fixed subject-level AAAI27 TiViT adapters."
+        description="Validate the fixed subject-level NeuroSigViT Shimmer adapter."
     )
-    parser.add_argument(
-        "--data-dir",
-        default="/home/xuzheyuan/guoyin/data/med_data/AAAI_Data",
-    )
+    parser.add_argument("--data-dir", required=True)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument(
         "--label-mode",
-        choices=["original", "zero_vs_rest"],
-        default="zero_vs_rest",
+        choices=["original", "shimmer_hc_vs_pd"],
+        default="shimmer_hc_vs_pd",
     )
     parser.add_argument(
         "--dataset-names",
         nargs="+",
         choices=AAAI27_DATASET_NAMES,
-        default=list(AAAI27_DATASET_NAMES),
+        default=["Shimmer_11_session11_DRINK"],
     )
     args = parser.parse_args()
 

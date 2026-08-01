@@ -490,12 +490,24 @@ class BaseTiViT(nn.Module, ABC):
 
     def aggregate_hidden_representations(self, hidden_states, aggregation):
         if aggregation == "mean":
-            pooled = hidden_states.mean(dim=1)
+            if hidden_states.ndim != 3 or hidden_states.shape[1] < 2:
+                raise ValueError(
+                    "Mean aggregation expects [batch, cls+patches, hidden] with "
+                    f"at least one patch token, got {tuple(hidden_states.shape)}."
+                )
+            # NeuroSigViT mean-pools spatial patch tokens only.  The leading
+            # OpenCLIP/HuggingFace token is the CLS token and is deliberately
+            # excluded from the activity-graph representation.
+            pooled = hidden_states[:, 1:, :].mean(dim=1)
         elif aggregation == "cls_token":
             pooled = hidden_states[:, 0, :]
         else:
             raise ValueError(f"Unsupported aggregation {aggregation}")
 
+        return self.project_pooled_representation(pooled)
+
+    def project_pooled_representation(self, pooled):
+        """Map a pooled backbone state to the model's public embedding space."""
         return pooled
 
     def robust_scale(self, x):
@@ -673,3 +685,15 @@ class TiViT_OpenCLIP(BaseTiViT):
             return x
         else:
             return torch.stack(hidden_states, dim=-1)
+
+    def project_pooled_representation(self, pooled):
+        # OpenCLIP ViT-H/14 has transformer width 1280 and a learned 1024-D
+        # output projection.  Applying the frozen post norm/projection makes
+        # the implementation match NeuroSigViT Eq. (5), while keeping the
+        # selected intermediate transformer depth fixed.
+        if hasattr(self.vit, "ln_post"):
+            pooled = self.vit.ln_post(pooled)
+        projection = getattr(self.vit, "proj", None)
+        if projection is not None:
+            pooled = pooled @ projection
+        return pooled

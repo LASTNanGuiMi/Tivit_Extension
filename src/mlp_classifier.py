@@ -17,7 +17,7 @@ from src.utils import (
 )
 
 
-FEATURE_CACHE_SCHEMA_VERSION = 1
+FEATURE_CACHE_SCHEMA_VERSION = 2
 
 
 class MLPClassifier(nn.Module):
@@ -289,7 +289,9 @@ def _forward_mantis_batch(model, batch, channels, device):
         outputs = model(batch_dim)
         batch_embeds_dim.append(outputs)
 
-    outputs = torch.cat(batch_embeds_dim, dim=1)
+    # Mantis emits one 512-D vector per channel.  NeuroSigViT pools those
+    # frozen channel representations into one sample-level temporal token.
+    outputs = torch.stack(batch_embeds_dim, dim=1).mean(dim=1)
 
     return nn.functional.normalize(outputs, dim=-1)
 

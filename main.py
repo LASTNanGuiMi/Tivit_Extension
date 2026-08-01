@@ -71,7 +71,7 @@ def build_feature_cache_signature(args, dataset, channels, patch_size):
         args.datasets == "falltl" and args.falltl_protocol == "comparison_binary"
     )
     configuration = {
-        "schema": 2,
+        "schema": 3,
         "dataset_group": args.datasets,
         "dataset": dataset,
         "dataset_names": args.dataset_names,
@@ -79,6 +79,7 @@ def build_feature_cache_signature(args, dataset, channels, patch_size):
         "label_mode": args.aaai27_label_mode,
         "falltl_protocol": args.falltl_protocol,
         "har_channels": args.har_channels,
+        "uci_protocol": args.uci_protocol,
         "split_seed": 42 if has_fixed_split else args.random_seed,
         "custom_test_ratio": args.custom_test_ratio,
         "window_size": args.window_size,
@@ -306,7 +307,7 @@ if __name__ == "__main__":
             if p:
                 print(f"Patch size: {p}")
 
-            # Embedding with TiViT (1st ViT configuration)
+            # Embedding with the NeuroSigViT visual branch (1st ViT configuration)
             if args.vit_1_name:
                 tivit_1 = get_tivit(
                     model_name=args.vit_1_name,
@@ -330,7 +331,7 @@ if __name__ == "__main__":
                         vali_loader=vali_loader,
                     )
 
-            # Embedding with TiViT (2nd ViT configuration)
+            # Embedding with the NeuroSigViT visual branch (2nd ViT configuration)
             if args.vit_2_name:
                 tivit_2 = get_tivit(
                     model_name=args.vit_2_name,

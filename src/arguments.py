@@ -226,6 +226,18 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--uci_protocol",
+        choices=["official_subject", "legacy_resplit"],
+        default="official_subject",
+        help=(
+            "UCI-HAR split protocol. official_subject preserves the published "
+            "subject-disjoint train/test files and draws validation only from "
+            "the training portion. legacy_resplit is retained only to inspect "
+            "historical runs that merged and randomly re-split both partitions."
+        ),
+    )
+
+    parser.add_argument(
         "--dataset_names",
         type=str,
         nargs="+",
@@ -234,11 +246,17 @@ def parse_args():
 
     parser.add_argument(
         "--aaai27_label_mode",
-        choices=["original", "zero_vs_rest"],
+        choices=[
+            "original",
+            "shimmer_hc_vs_pd",
+            "pads_pd_vs_hc",
+            "pads_pd_vs_omd",
+        ],
         default="original",
         help=(
-            "AAAI27 label mapping. zero_vs_rest keeps label 0 as class 0 and "
-            "maps original labels 1 and 2 to class 1."
+            "Explicit clinical endpoint for PADS/Shimmer. Shimmer merges MildPD "
+            "and ModeratePD against HC; PADS supports PD-vs-healthy or "
+            "PD-vs-other-movement-disorders without collapsing all diagnoses."
         ),
     )
 
@@ -247,9 +265,10 @@ def parse_args():
         choices=["legacy_windows", "comparison_binary"],
         default="legacy_windows",
         help=(
-            "FallTL data protocol. comparison_binary matches the baseline loader: "
-            "one resampled sequence per CSV, D/F binary labels, and a fixed "
-            "seed-42 60/20/20 stratified split."
+            "FallTL data protocol. comparison_binary uses one variable-length "
+            "sequence per CSV, D/F binary labels, linear interpolation, "
+            "training-split channel statistics, zero padding, and a fixed "
+            "seed-42 60/20/20 stratified sample-level split."
         ),
     )
 

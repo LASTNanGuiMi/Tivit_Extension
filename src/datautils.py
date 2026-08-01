@@ -99,7 +99,7 @@ AAAI27_DYNAMIC_DATASET_SPECS = {
     },
 }
 AAAI27_REFERENCE_DATASETS_SHA256 = (
-    "c11d4678274b9c66d36d08f4fc08890c99fe8e79879f008d43b19b1faaf535a0"
+    "0113d69736e9678a43b8e2c62b344bb34e6776c023085f1a80e7e81b0a512092"
 )
 _AAAI27_MODULE_CACHE = {}
 
@@ -108,6 +108,7 @@ _AAAI27_MODULE_CACHE = {}
 class AAAI27DataBundle:
     dataset_name: str
     data_root: Path
+    reference_root: Path
     train_loader: DataLoader
     train_labels: np.ndarray
     vali_loader: DataLoader
@@ -118,6 +119,7 @@ class AAAI27DataBundle:
     vali_dataset: Any
     test_dataset: Any
     label_mode: str = "original"
+    label_mapping: dict[int, int] | None = None
 
 
 @dataclass
@@ -549,9 +551,44 @@ def _natural_path_key(path):
     ]
 
 
-def _load_falltl_comparison_arrays(data_dir, sequence_length=256):
-    from sklearn.preprocessing import StandardScaler
+def _interpolate_falltl_sequence(values, source_file):
+    values = np.asarray(values, dtype=np.float32)
+    positions = np.arange(len(values), dtype=np.float32)
+    interpolated = values.copy()
+    for channel in range(values.shape[1]):
+        observed = np.isfinite(values[:, channel])
+        if not np.any(observed):
+            raise ValueError(
+                f"FallTL file {source_file} has no finite values in channel {channel}."
+            )
+        interpolated[:, channel] = np.interp(
+            positions,
+            positions[observed],
+            values[observed, channel],
+        )
+    return interpolated
 
+
+def _standardize_and_pad_falltl(train_sequences, *other_splits):
+    train_points = np.concatenate(train_sequences, axis=0)
+    mean = train_points.mean(axis=0, keepdims=True)
+    std = train_points.std(axis=0, keepdims=True)
+    std = np.where(std < 1e-8, 1.0, std)
+
+    padded_splits = []
+    for sequences in (train_sequences, *other_splits):
+        max_length = max(len(sequence) for sequence in sequences)
+        padded = np.zeros(
+            (len(sequences), train_points.shape[1], max_length), dtype=np.float32
+        )
+        for index, sequence in enumerate(sequences):
+            standardized = ((sequence - mean) / std).astype(np.float32)
+            padded[index, :, : len(sequence)] = standardized.T
+        padded_splits.append(padded)
+    return tuple(padded_splits)
+
+
+def _load_falltl_comparison_arrays(data_dir):
     falltl_dir = find_dataset_dir(data_dir, ["FallTL", "falltl"], "*.csv")
     csv_files = sorted(
         _glob_csv_files(falltl_dir, "*.csv"), key=_natural_path_key
@@ -561,73 +598,38 @@ def _load_falltl_comparison_arrays(data_dir, sequence_length=256):
         [1 if filename.startswith("F") else 0 for filename in source_files],
         dtype=np.int64,
     )
-    baseline_cache = Path(f"/tmp/medformer_falltl_{sequence_length}.npz")
-    raw_features = None
-    if baseline_cache.is_file():
-        cached = np.load(baseline_cache)
-        cached_features = cached["X"]
-        cached_labels = cached["y"]
-        if (
-            cached_features.shape == (len(csv_files), sequence_length, 9)
-            and np.array_equal(cached_labels, labels)
-        ):
-            raw_features = cached_features
-            print(f"Using validated FallTL comparison cache: {baseline_cache}")
+    sequences = []
+    valid_labels = []
+    valid_files = []
+    for csv_file, label, source_file in zip(csv_files, labels, source_files):
+        values = np.genfromtxt(
+            csv_file,
+            delimiter=",",
+            skip_header=1,
+            usecols=range(9),
+            dtype=np.float32,
+        )
+        if values.ndim == 1:
+            values = values.reshape(1, -1)
+        if len(values) == 0:
+            continue
+        sequences.append(_interpolate_falltl_sequence(values, source_file))
+        valid_labels.append(label)
+        valid_files.append(source_file)
 
-    if raw_features is None:
-        sequences = []
-        valid_labels = []
-        valid_files = []
-        for csv_file, label, source_file in zip(csv_files, labels, source_files):
-            values = np.genfromtxt(
-                csv_file,
-                delimiter=",",
-                skip_header=1,
-                usecols=range(9),
-                dtype=np.float32,
-            )
-            if values.ndim == 1:
-                values = values.reshape(1, -1)
-            values = values[~np.isnan(values).any(axis=1)]
-            if len(values) == 0:
-                continue
-            positions = np.linspace(0, len(values) - 1, sequence_length)
-            sequences.append(
-                np.stack(
-                    [
-                        np.interp(
-                            positions, np.arange(len(values)), values[:, channel]
-                        )
-                        for channel in range(9)
-                    ],
-                    axis=1,
-                ).astype(np.float32)
-            )
-            valid_labels.append(label)
-            valid_files.append(source_file)
-        raw_features = np.stack(sequences)
-        labels = np.asarray(valid_labels, dtype=np.int64)
-        source_files = np.asarray(valid_files)
-
-    if not len(raw_features):
+    if not sequences:
         raise FileNotFoundError(f"No FallTL CSV files found below {data_dir}")
-    features = np.stack(
-        [
-            StandardScaler().fit_transform(sequence).astype(np.float32).T
-            for sequence in raw_features
-        ]
-    )
     return (
-        features,
-        labels,
-        source_files,
+        sequences,
+        np.asarray(valid_labels, dtype=np.int64),
+        np.asarray(valid_files),
     )
 
 
 def get_falltl_comparison_dataloaders(args):
     from sklearn.model_selection import train_test_split
 
-    data, labels, source_files = _load_falltl_comparison_arrays(args.data_dir)
+    sequences, labels, source_files = _load_falltl_comparison_arrays(args.data_dir)
     all_indices = np.arange(len(labels))
     train_indices, remainder_indices = train_test_split(
         all_indices,
@@ -642,11 +644,16 @@ def get_falltl_comparison_dataloaders(args):
         stratify=labels[remainder_indices],
     )
 
+    train_data, vali_data, test_data = _standardize_and_pad_falltl(
+        [sequences[index] for index in train_indices],
+        [sequences[index] for index in vali_indices],
+        [sequences[index] for index in test_indices],
+    )
     train_loader, vali_loader = _make_tensor_loaders(
-        data[train_indices], data[vali_indices], args.batch_size
+        train_data, vali_data, args.batch_size
     )
     _, test_loader = _make_tensor_loaders(
-        data[train_indices], data[test_indices], args.batch_size
+        train_data, test_data, args.batch_size
     )
     bundle = FallTLComparisonBundle(
         train_loader=train_loader,
@@ -822,9 +829,7 @@ def find_aaai27_data_root(data_dir, dataset_name):
             continue
         seen.add(normalized)
         if not (
-            (normalized / "data_loading" / "datasets.py").is_file()
-            and (normalized / "data_loading" / "split_reference_seed42.csv").is_file()
-            and (normalized / dataset_name / "Meta" / "subject_map.csv").is_file()
+            (normalized / dataset_name / "Meta" / "subject_map.csv").is_file()
             and (normalized / dataset_name / "Feature").is_dir()
         ):
             continue
@@ -832,12 +837,30 @@ def find_aaai27_data_root(data_dir, dataset_name):
 
     raise FileNotFoundError(
         f"Could not find AAAI_Data/{dataset_name} below {data_dir!r}. "
-        "Expected the dataset directories and data_loading reference files."
+        "Expected the dataset Feature/ and Meta/subject_map.csv files."
     )
 
 
-def _load_aaai27_reference(data_root):
-    module_path = Path(data_root) / "data_loading" / "datasets.py"
+def _find_aaai27_reference_root(data_root):
+    candidates = (
+        Path(data_root) / "data_loading",
+        Path(__file__).resolve().parents[1] / "data_loading",
+    )
+    for candidate in candidates:
+        if (
+            (candidate / "datasets.py").is_file()
+            and (candidate / "split_reference_seed42.csv").is_file()
+        ):
+            return candidate
+    raise FileNotFoundError(
+        "Missing AAAI27 reference loader and split file. Expected "
+        "data_loading/datasets.py and data_loading/split_reference_seed42.csv "
+        "either beside the dataset root or in the repository."
+    )
+
+
+def _load_aaai27_reference(reference_root):
+    module_path = Path(reference_root) / "datasets.py"
     digest = hashlib.sha256(module_path.read_bytes()).hexdigest()
     if digest != AAAI27_REFERENCE_DATASETS_SHA256:
         raise ValueError(
@@ -868,7 +891,7 @@ def _make_aaai27_tensor_loader(source_dataset, batch_size):
     if source_dataset.X is None or source_dataset.y is None:
         raise ValueError("AAAI27 source dataset did not load samples")
 
-    # The reference interface is [N,T,6]; TiViT consumes [N,6,T].
+    # The reference interface is [N,T,6]; NeuroSigViT consumes [N,6,T].
     inputs = torch.from_numpy(source_dataset.X.transpose(0, 2, 1))
     tensor_dataset = TensorDataset(inputs)
     tensor_dataset.source_dataset = source_dataset
@@ -883,8 +906,90 @@ def _make_aaai27_tensor_loader(source_dataset, batch_size):
     return loader, labels
 
 
+def _standardize_aaai27_bundle_from_train(bundle, batch_size):
+    """Standardize selected task channels with training-split statistics only."""
+    train_data = bundle.train_loader.dataset.tensors[0]
+    mean = train_data.mean(dim=(0, 2), keepdim=True)
+    std = train_data.std(dim=(0, 2), unbiased=False, keepdim=True)
+    std = torch.where(std < 1e-8, torch.ones_like(std), std)
+
+    for split in ("train", "vali", "test"):
+        loader = getattr(bundle, f"{split}_loader")
+        standardized = ((loader.dataset.tensors[0] - mean) / std).float()
+        tensor_dataset = TensorDataset(standardized)
+        tensor_dataset.source_dataset = loader.dataset.source_dataset
+        tensor_dataset.sample_subject_ids = loader.dataset.sample_subject_ids
+        setattr(
+            bundle,
+            f"{split}_loader",
+            DataLoader(
+                tensor_dataset,
+                num_workers=0,
+                batch_size=batch_size,
+                shuffle=False,
+            ),
+        )
+
+
+def _apply_aaai27_label_protocol(bundle, label_mode, batch_size):
+    family = "shimmer" if bundle.dataset_name.startswith("Shimmer_") else "pads"
+    protocols = {
+        "shimmer_hc_vs_pd": ("shimmer", {0: 0, 1: 1, 2: 1}),
+        "pads_pd_vs_hc": ("pads", {0: 0, 1: 1}),
+        "pads_pd_vs_omd": ("pads", {2: 0, 1: 1}),
+    }
+
+    if label_mode == "original":
+        labels = bundle.train_dataset.label_names
+        mapping = {int(label): int(label) for label in labels}
+    else:
+        if label_mode not in protocols:
+            raise ValueError(f"Unsupported AAAI27 label mode: {label_mode}")
+        expected_family, mapping = protocols[label_mode]
+        if family != expected_family:
+            raise ValueError(
+                f"Label mode {label_mode} is only valid for {expected_family} "
+                f"datasets, not {bundle.dataset_name}."
+            )
+
+    for split in ("train", "vali", "test"):
+        source_dataset = getattr(bundle, f"{split}_dataset")
+        loader = getattr(bundle, f"{split}_loader")
+        original_labels = np.asarray(source_dataset.y, dtype=np.int64)
+        keep = np.isin(original_labels, np.asarray(list(mapping), dtype=np.int64))
+        if not np.any(keep):
+            raise ValueError(
+                f"{bundle.dataset_name} split={split} has no samples for {label_mode}."
+            )
+
+        inputs = loader.dataset.tensors[0][torch.as_tensor(keep)]
+        tensor_dataset = TensorDataset(inputs)
+        tensor_dataset.source_dataset = source_dataset
+        tensor_dataset.sample_subject_ids = np.asarray(
+            source_dataset.sample_subject_ids
+        )[keep]
+        mapped_labels = np.asarray(
+            [mapping[int(label)] for label in original_labels[keep]],
+            dtype=np.int64,
+        )
+        setattr(
+            bundle,
+            f"{split}_loader",
+            DataLoader(
+                tensor_dataset,
+                num_workers=0,
+                batch_size=batch_size,
+                shuffle=False,
+            ),
+        )
+        setattr(bundle, f"{split}_labels", mapped_labels)
+
+    bundle.label_mode = label_mode
+    bundle.label_mapping = mapping
+
+
 def _validate_aaai27_bundle(bundle, reference_module):
-    reference_csv = bundle.data_root / "data_loading" / "split_reference_seed42.csv"
+    reference_csv = bundle.reference_root / "split_reference_seed42.csv"
     reference = reference_module._read_reference_csv(reference_csv)
     if bundle.dataset_name in reference:
         reference_module._verify_reference_assignment(bundle.train_dataset, reference)
@@ -947,7 +1052,8 @@ def _validate_aaai27_bundle(bundle, reference_module):
 
 def get_aaai27_dataloaders(dataset_name, args):
     data_root = find_aaai27_data_root(args.data_dir, dataset_name)
-    reference_module = _load_aaai27_reference(data_root)
+    reference_root = _find_aaai27_reference_root(data_root)
+    reference_module = _load_aaai27_reference(reference_root)
     dataset_classes = {
         dataset_class.dataset_name: dataset_class
         for dataset_class in reference_module.DATASET_CLASSES
@@ -968,7 +1074,7 @@ def get_aaai27_dataloaders(dataset_name, args):
         split: dataset_class(
             data_root=data_root,
             split=split,
-            normalize=True,
+            normalize=False,
             verbose=False,
         )
         for split in ("train", "vali", "test")
@@ -985,6 +1091,7 @@ def get_aaai27_dataloaders(dataset_name, args):
     bundle = AAAI27DataBundle(
         dataset_name=dataset_name,
         data_root=data_root,
+        reference_root=reference_root,
         train_loader=train_loader,
         train_labels=train_labels,
         vali_loader=vali_loader,
@@ -998,13 +1105,8 @@ def get_aaai27_dataloaders(dataset_name, args):
     _validate_aaai27_bundle(bundle, reference_module)
 
     label_mode = getattr(args, "aaai27_label_mode", "original")
-    if label_mode == "zero_vs_rest":
-        bundle.train_labels = (bundle.train_labels != 0).astype(np.int64)
-        bundle.vali_labels = (bundle.vali_labels != 0).astype(np.int64)
-        bundle.test_labels = (bundle.test_labels != 0).astype(np.int64)
-        bundle.label_mode = label_mode
-    elif label_mode != "original":
-        raise ValueError(f"Unsupported AAAI27 label mode: {label_mode}")
+    _apply_aaai27_label_protocol(bundle, label_mode, args.batch_size)
+    _standardize_aaai27_bundle_from_train(bundle, args.batch_size)
 
     split_distributions = []
     for split, labels in (
@@ -1019,7 +1121,8 @@ def get_aaai27_dataloaders(dataset_name, args):
         split_distributions.append(f"{split}=[{distribution}]")
     print(
         f"AAAI27 {dataset_name}: "
-        f"train={len(train_labels)}, vali={len(vali_labels)}, test={len(test_labels)}; "
+        f"train={len(bundle.train_labels)}, vali={len(bundle.vali_labels)}, "
+        f"test={len(bundle.test_labels)}; "
         f"label_mode={label_mode}; {' '.join(split_distributions)}; "
         "subject split/reference=PASS"
     )
@@ -1050,20 +1153,20 @@ def write_aaai27_split_audit(bundle, result_dir):
         writer = csv.writer(handle)
         writer.writerow([
             "dataset_name",
+            "label_protocol",
             "numeric_subject_id",
             "original_label_id",
             "label_id",
             "split",
         ])
         for subject_id, original_label_id, split in sorted(assignments):
-            label_id = (
-                int(original_label_id != 0)
-                if bundle.label_mode == "zero_vs_rest"
-                else original_label_id
-            )
+            if original_label_id not in bundle.label_mapping:
+                continue
+            label_id = bundle.label_mapping[original_label_id]
             writer.writerow(
                 [
                     bundle.dataset_name,
+                    bundle.label_mode,
                     subject_id,
                     original_label_id,
                     label_id,
@@ -1098,6 +1201,7 @@ def get_dataloader(dataset, args):
         return train_loader, train_labels, test_loader, test_labels
 
     if args.datasets == "uci":
+        uci_protocol = getattr(args, "uci_protocol", "official_subject")
         signal_files = UCI_HAR_SIGNAL_FILES
         channel_indices = range(9)
         expected_channels = 9
@@ -1112,33 +1216,51 @@ def get_dataloader(dataset, args):
         except FileNotFoundError:
             pass
 
-        if raw_uci_dir is not None:
+        if uci_protocol == "official_subject":
+            if raw_uci_dir is None:
+                raise FileNotFoundError(
+                    "The official UCI-HAR protocol requires the original "
+                    "train/Inertial Signals and test/Inertial Signals directories; "
+                    "a combined Feature/feature.npy file cannot recover the "
+                    "subject-disjoint split. Use --uci_protocol legacy_resplit "
+                    "only for auditing historical results."
+                )
             train_data, train_labels = load_uci_har_split(
                 raw_uci_dir, "train", signal_files=signal_files
             )
             test_data, test_labels = load_uci_har_split(
                 raw_uci_dir, "test", signal_files=signal_files
             )
-            train_data, train_labels, test_data, test_labels = _resplit_data(
-                train_data,
-                train_labels,
-                test_data,
-                test_labels,
-                args.custom_test_ratio,
-                args.random_seed,
-            )
+        elif uci_protocol == "legacy_resplit":
+            if raw_uci_dir is not None:
+                train_data, train_labels = load_uci_har_split(
+                    raw_uci_dir, "train", signal_files=signal_files
+                )
+                test_data, test_labels = load_uci_har_split(
+                    raw_uci_dir, "test", signal_files=signal_files
+                )
+                train_data, train_labels, test_data, test_labels = _resplit_data(
+                    train_data,
+                    train_labels,
+                    test_data,
+                    test_labels,
+                    args.custom_test_ratio,
+                    args.random_seed,
+                )
+            else:
+                data, labels = load_preprocessed_har(
+                    args.data_dir,
+                    "UCI-HAR",
+                    channel_indices=channel_indices,
+                )
+                train_data, train_labels, test_data, test_labels = _split_array_data(
+                    data,
+                    labels,
+                    args.custom_test_ratio,
+                    args.random_seed,
+                )
         else:
-            data, labels = load_preprocessed_har(
-                args.data_dir,
-                "UCI-HAR",
-                channel_indices=channel_indices,
-            )
-            train_data, train_labels, test_data, test_labels = _split_array_data(
-                data,
-                labels,
-                args.custom_test_ratio,
-                args.random_seed,
-            )
+            raise ValueError(f"Unsupported UCI-HAR protocol: {uci_protocol}")
 
         if train_data.shape[1] != expected_channels:
             raise ValueError(
