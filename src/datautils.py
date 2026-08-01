@@ -305,7 +305,7 @@ def load_preprocessed_har(data_dir, dirname, channel_indices=None):
             f"{features.shape}."
         )
 
-    # Downloaded Medformer arrays use (N, T, C); TiViT expects (N, C, T).
+    # Downloaded Medformer arrays use (N, T, C); NeuroSigViT expects (N, C, T).
     data = np.asarray(
         features[:, :, channel_indices], dtype=np.float32
     ).transpose(0, 2, 1)
@@ -1014,7 +1014,7 @@ def _validate_aaai27_bundle(bundle, reference_module):
         actual_shape = tuple(loader.dataset.tensors[0].shape)
         if actual_shape != expected_shape:
             raise AssertionError(
-                f"{bundle.dataset_name} split={split}: expected TiViT shape "
+                f"{bundle.dataset_name} split={split}: expected NeuroSigViT shape "
                 f"{expected_shape}, got {actual_shape}"
             )
         if not np.array_equal(labels, source_dataset.y):

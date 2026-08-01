@@ -71,7 +71,7 @@ def run_training(cache_dir):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="tivit_mlp_fixed_split_") as cache_dir:
+    with tempfile.TemporaryDirectory(prefix="neurosigvit_mlp_fixed_split_") as cache_dir:
         first = run_training(cache_dir)
         second = run_training(cache_dir)
 

@@ -1,196 +1,72 @@
 # NeuroSigViT
 
-Anonymous implementation of **NeuroSigViT**, the frozen visual-temporal model
-described in *Representations for Wearable Sensor-Based Parkinson's Disease
-Assessment Lie Hidden in Pretrained Vision Transformers*.
+Code for **NeuroSigViT**, the model described in *Representations for Wearable
+Sensor-Based Parkinson's Disease Assessment Lie Hidden in Pretrained Vision
+Transformers*.
 
-The repository provides one checked, self-contained experiment example:
-`Shimmer_11_session11_DRINK`. The processed Shimmer example and its fixed
-subject-disjoint split are included. CLIP ViT-H/14 and Mantis-8M checkpoints
-must be downloaded separately.
+The repository includes a complete Shimmer example
+(`Shimmer_11_session11_DRINK`), its fixed subject split, and the processed input
+arrays. The CLIP ViT-H/14 and Mantis-8M weights are downloaded separately.
 
-## Reviewer quick start
+## Method
 
-After cloning the repository on a CUDA-capable Linux machine, the following
-commands create the environment, download the two public checkpoints to the
-paths expected by the Shell launcher, validate the artifact, and start the
-Shimmer run:
+![NeuroSigViT architecture](assets/neurosigvit_method.jpg)
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+NeuroSigViT has two frozen feature branches. The visual branch converts the six
+sensor channels into an activity graph and extracts patch-token features from
+layer 14 of CLIP ViT-H/14. The temporal branch applies Mantis-8M to each sensor
+channel and averages the six channel embeddings. The resulting 1024-dimensional
+visual feature and 512-dimensional temporal feature are projected to 128
+dimensions, updated by two-token self-attention, and passed to an MLP
+classifier. Only the projection, attention, and classifier layers are trained.
 
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='laion/CLIP-ViT-H-14-laion2B-s32B-b79K', local_dir='checkpoints/CLIP-ViT-H-14-laion2B-s32B-b79K')"
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='paris-noah/Mantis-8M', revision='93a16a52a5e2e6d76c0b823533b5836dd83ca10a', local_dir='checkpoints/Mantis-8M')"
+The implementation excludes the CLIP CLS token before patch-token averaging.
+It also pools Mantis features across channels, so the temporal branch produces
+one 512-dimensional vector per sample. These dimensions are the ones used by
+the code, even though an earlier version of the figure contains legacy
+dimension labels.
 
-python scripts/test_paper_protocol.py
-python scripts/test_aaai27_datasets.py --data-dir data
-bash scripts/run_shimmer_example.sh
-```
-
-Once the environment and checkpoints exist, the **one-command reproduction
-entry point** is simply:
-
-```bash
-bash scripts/run_shimmer_example.sh
-```
-
-The launcher contains the complete paper-aligned Python command. Reviewers do
-not need to reconstruct arguments manually; the expanded command is also shown
-later for transparency.
-
-## Method overview
-
-<p align="center">
-  <img src="./assets/neurosigvit_method.jpg" alt="NeuroSigViT architecture" width="100%">
-</p>
-
-If the embedded preview is disabled by a Markdown editor, open the
-[full-resolution method figure](./assets/neurosigvit_method.jpg) directly.
-
-NeuroSigViT represents each six-channel wearable sample through two frozen
-branches:
-
-1. **Activity-graph visual branch.** A deterministic pair-covering channel walk
-   renders one multicolumn activity graph. A frozen CLIP ViT-H/14 is read at
-   transformer layer 14. Patch tokens are mean-pooled without the CLS token,
-   passed through the frozen OpenCLIP post-norm and projection, and
-   L2-normalized to a 1024-dimensional vector.
-2. **Numerical temporal branch.** Frozen Mantis-8M encodes each original signal
-   channel. The six channel embeddings are mean-pooled and L2-normalized to one
-   512-dimensional vector.
-3. **Learned interaction.** Both branch vectors are projected to 128 dimensions
-   and treated as two modality tokens. Two-head self-attention updates the two
-   tokens, which are flattened and classified by a two-layer MLP with dropout
-   0.1.
-
-Only the projection, two-token attention, and classification layers are
-trained. Both pretrained encoders remain frozen.
-
-> **Implementation contract.** The supplied manuscript artwork contains legacy
-> `R^1028`/`R^256` annotations and an all-token averaging expression. The code
-> and experiment command in this repository use the corrected contract above:
-> 1024 projected visual dimensions, 512 channel-pooled temporal dimensions, and
-> patch-only visual pooling with the CLS token excluded.
-
-## Repository contents
+## Repository layout
 
 ```text
 .
-|-- main.py
-|-- src/                              # rendering, encoders, fusion, training
-|-- assets/
-|   `-- neurosigvit_method.jpg        # method overview
-|-- data/
-|   `-- med_data/AAAI_Data/
-|       `-- Shimmer_11_session11_DRINK/
-|           |-- Feature/              # 130 anonymous float32 samples
-|           |-- Label/label.npy
-|           `-- Meta/                 # channels and anonymous subject map
-|-- data_loading/
-|   |-- datasets.py                   # Shimmer-only subject-aware loader
-|   `-- split_reference_seed42.csv    # fixed 77/25/28 assignment
-|-- scripts/
-|   |-- run_shimmer_example.sh        # convenient launcher
-|   `-- test_*.py
-`-- requirements.txt
+├── main.py
+├── src/                              # model, feature extraction, and training
+├── assets/
+│   └── neurosigvit_method.jpg
+├── data/
+│   └── med_data/AAAI_Data/
+│       └── Shimmer_11_session11_DRINK/
+│           ├── Feature/              # 130 processed samples
+│           ├── Label/label.npy
+│           └── Meta/                 # channel and anonymous subject metadata
+├── data_loading/
+│   ├── datasets.py
+│   └── split_reference_seed42.csv
+├── scripts/
+│   ├── run_shimmer_example.sh
+│   └── test_*.py
+└── requirements.txt
 ```
 
-Generated results, logs, and feature caches are ignored by Git.
+## Environment
 
-## Checkpoints
+The supplied `requirements.txt` pins the direct Python dependencies used for
+the checked run. The following configuration was tested on the server:
 
-| Component | Required checkpoint | Official link |
-| --- | --- | --- |
-| Visual encoder | `laion/CLIP-ViT-H-14-laion2B-s32B-b79K` | [CLIP ViT-H/14 checkpoint](https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K) |
-| Temporal encoder | `paris-noah/Mantis-8M` | [Mantis-8M checkpoint](https://huggingface.co/paris-noah/Mantis-8M) |
-
-The visual model used by NeuroSigViT is therefore **LAION OpenCLIP ViT-H/14,
-trained on LAION-2B with the `s32B-b79K` recipe**. It is not the smaller ViT-B
-or ViT-L checkpoint.
-
-Download both repositories with `huggingface_hub`:
-
-```bash
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='laion/CLIP-ViT-H-14-laion2B-s32B-b79K', local_dir='checkpoints/CLIP-ViT-H-14-laion2B-s32B-b79K')"
-
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='paris-noah/Mantis-8M', revision='93a16a52a5e2e6d76c0b823533b5836dd83ca10a', local_dir='checkpoints/Mantis-8M')"
-```
-
-The pinned Mantis revision above is the revision used by the validated server
-environment. A Hugging Face account is normally not required for these public
-repositories, but large-file downloads need working Git LFS/Xet or
-`huggingface_hub` support.
-
-The download commands deliberately create the launcher's default paths:
-
-```text
-checkpoints/CLIP-ViT-H-14-laion2B-s32B-b79K/
-checkpoints/Mantis-8M/
-```
-
-## Dataset availability
-
-Only the processed Shimmer DRINK example is used by the maintained experiment.
-The remaining links are provided for reference to the datasets discussed in the
-paper; this repository does not claim that those external downloads are already
-converted to the required tensor layout.
-
-| Dataset | Availability | Used by the included example? |
-| --- | --- | --- |
-| Shimmer / PDWearML | [IEEE DataPort dataset page](https://ieee-dataport.org/documents/pdwearml-leveraging-daily-activities-rapid-free-living-parkinsons-disease-severity) and [PDWearML code](https://github.com/wang-xulong/PDWearML) | Yes; the processed DRINK subset is bundled |
-| FallTL | [Zenodo record 17552449](https://zenodo.org/records/17552449) | No |
-| PADS | [PhysioNet PADS v1.0.0](https://physionet.org/content/parkinsons-disease-smartwatch/1.0.0/) | No |
-| UCI-HAR | [Google Drive download](https://drive.google.com/file/d/13HA6l3dnOm46dN4EgzS_YRwHUGIEruKD/view?usp=drive_link) · [official UCI page](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones) | No |
-
-Users must follow the original dataset licenses and terms. Bundling the processed
-Shimmer example does not transfer ownership of or relicense the source dataset.
-
-## Included Shimmer task
-
-The bundled sample root is:
-
-```text
-data/med_data/AAAI_Data/Shimmer_11_session11_DRINK/
-```
-
-Each sample contains six right-wrist inertial channels and 4096 time steps. The
-maintained binary endpoint is:
-
-- class 0: healthy controls (`HC`);
-- class 1: Parkinson's disease (`MildPD` and `ModeratePD` merged).
-
-This is an HC-versus-PD-status task on a severity-annotated cohort, not a
-MildPD-versus-ModeratePD classifier. The fixed split contains 77 training, 25
-validation, and 28 test subjects. Channel standardization statistics are fitted
-on the selected training split only and then applied to validation and test
-data.
-
-## Environment setup
-
-The code was tested end to end in the following environment:
-
-| Component | Validated value |
+| Component | Version |
 | --- | --- |
-| Operating system | Ubuntu 22.04 / Linux kernel 5.15, glibc 2.35 |
+| Ubuntu | 22.04 |
 | Python | 3.11.15 |
 | GPU | NVIDIA GeForce RTX 4090 |
 | NVIDIA driver | 535.309.01 |
-| PyTorch | 2.7.1 (`torch.version.cuda == 12.6`) |
+| PyTorch | 2.7.1 (CUDA 12.6 build) |
 | torchvision | 0.22.1 |
-| OpenCLIP | 2.32.0 |
-| Mantis TSFM | 1.0.0 |
-| Transformers | 4.33.3 |
+| open_clip_torch | 2.32.0 |
+| mantis-tsfm | 1.0.0 |
+| transformers | 4.33.3 |
 
-`requirements.txt` is exported from this validated environment and pins every
-top-level project dependency, including the checkpoint download client. It
-contains no floating Git branch or unpinned Git URL. Install it in a clean
-Python 3.11 environment rather than mixing it into an existing research
-environment.
-
-Create an isolated environment and install the packaged dependency file:
+Create a fresh environment before installing the dependencies:
 
 ```bash
 python3.11 -m venv .venv
@@ -199,7 +75,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Conda is also supported:
+Conda can be used instead:
 
 ```bash
 conda create -n neurosigvit python=3.11 -y
@@ -207,41 +83,94 @@ conda activate neurosigvit
 python -m pip install -r requirements.txt
 ```
 
-Confirm that PyTorch sees the GPU:
+Check the CUDA installation with:
 
 ```bash
-python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('gpu:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-## Run with the shell launcher
+## Checkpoints
 
-If the checkpoints were downloaded to the default `checkpoints/` paths above,
-no path variables are required. The data path also defaults to the bundled
-`data/` directory. The complete reproduction command is:
+NeuroSigViT uses the following public checkpoints:
+
+| Branch | Checkpoint | Download |
+| --- | --- | --- |
+| Visual | LAION OpenCLIP ViT-H/14, `s32B-b79K` | [Hugging Face](https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K) |
+| Temporal | Mantis-8M | [Hugging Face](https://huggingface.co/paris-noah/Mantis-8M) |
+
+Download them to the default paths used by the example script:
+
+```bash
+mkdir -p checkpoints
+
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='laion/CLIP-ViT-H-14-laion2B-s32B-b79K', local_dir='checkpoints/CLIP-ViT-H-14-laion2B-s32B-b79K')"
+
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='paris-noah/Mantis-8M', revision='93a16a52a5e2e6d76c0b823533b5836dd83ca10a', local_dir='checkpoints/Mantis-8M')"
+```
+
+The second command fixes the Mantis revision used for the server check.
+
+## Data
+
+The maintained example uses a processed Shimmer DRINK subset included at:
+
+```text
+data/med_data/AAAI_Data/Shimmer_11_session11_DRINK/
+```
+
+Each sample has six right-wrist inertial channels and 4096 time steps. The task
+is binary PD status classification:
+
+- `0`: healthy control (`HC`)
+- `1`: Parkinson's disease (`MildPD` and `ModeratePD`)
+
+The fixed subject-disjoint split contains 77 training, 25 validation, and 28
+test samples. Standardization statistics are fitted on the training split and
+then applied to validation and test data.
+
+Original dataset pages:
+
+| Dataset | Link |
+| --- | --- |
+| Shimmer / PDWearML | [IEEE DataPort](https://ieee-dataport.org/documents/pdwearml-leveraging-daily-activities-rapid-free-living-parkinsons-disease-severity), [PDWearML code](https://github.com/wang-xulong/PDWearML) |
+| FallTL | [Zenodo record 17552449](https://zenodo.org/records/17552449) |
+| PADS | [PhysioNet PADS v1.0.0](https://physionet.org/content/parkinsons-disease-smartwatch/1.0.0/) |
+| UCI-HAR | [Google Drive](https://drive.google.com/file/d/13HA6l3dnOm46dN4EgzS_YRwHUGIEruKD/view?usp=drive_link), [UCI repository](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones) |
+
+Only the bundled Shimmer example is covered by the commands below. Use of the
+source datasets remains subject to their original licenses and terms.
+
+## Run the Shimmer example
+
+After installing the environment and downloading both checkpoints, run:
 
 ```bash
 bash scripts/run_shimmer_example.sh
 ```
 
-To use checkpoints or a Python environment stored elsewhere, override them:
+This is the one-command experiment entry point. It uses the bundled data,
+trains for up to 40 epochs with early-stopping patience 8, and writes outputs to
+`results/shimmer_example_seed2022/`.
+
+The script accepts environment-variable overrides when the data, checkpoints,
+or Python executable are stored elsewhere:
 
 ```bash
-export MODEL_DIR="$PWD/checkpoints/CLIP-ViT-H-14-laion2B-s32B-b79K"
-export MANTIS_DIR="$PWD/checkpoints/Mantis-8M"
-export PYTHON_BIN="$PWD/.venv/bin/python"
-export GPU=0
+MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K \
+MANTIS_DIR=/path/to/Mantis-8M \
+DATA_DIR=/path/to/data \
+PYTHON_BIN=/path/to/python \
+GPU=0 \
+bash scripts/run_shimmer_example.sh
 ```
 
-Inspect the command without running training:
+To print the command and verify all paths without starting training:
 
 ```bash
 DRY_RUN=1 bash scripts/run_shimmer_example.sh
 ```
 
-The default command runs 40 epochs with seed 2022 and early-stopping patience
-8. It writes results and feature caches to ignored repository-local folders.
-
-For a short end-to-end smoke test:
+A short smoke run can be launched with:
 
 ```bash
 EPOCHS=1 PATIENCE=1 \
@@ -250,13 +179,10 @@ FEATURE_CACHE_DIR=/tmp/neurosigvit_smoke_cache \
 bash scripts/run_shimmer_example.sh
 ```
 
-Supported launcher overrides are `DATA_DIR`, `GPU`, `SEED`, `EPOCHS`,
-`PATIENCE`, `PYTHON_BIN`, `RESULT_DIR`, and `FEATURE_CACHE_DIR`.
+## Direct Python command
 
-## Run directly with Python
-
-The following is the complete command executed by the launcher. It can be
-copied directly into a Bash terminal after setting `MODEL_DIR` and `MANTIS_DIR`:
+The shell script wraps the following command. Set `MODEL_DIR` and `MANTIS_DIR`
+before running it directly.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -288,21 +214,9 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
   --result_dir results/shimmer_example_seed2022
 ```
 
-Important settings:
+## Checks
 
-| Argument | Meaning |
-| --- | --- |
-| `--vit_1_layer 14` | Reads the frozen ViT-H/14 representation at layer 14 |
-| `--aggregation mean` | Mean-pools patch tokens while excluding CLS |
-| `--image_mode activity_graph` | Uses the pair-covering activity-graph rendering |
-| `--mantis` | Enables the frozen numerical time-series branch |
-| `--modal_interaction concat_attn` | Applies learned attention to the two modality tokens |
-| `--aaai27_label_mode shimmer_hc_vs_pd` | Maps HC to 0 and Mild/Moderate PD to 1 |
-| `--mlp_class_weight balanced` | Computes class weights from the training split |
-
-## Validation
-
-Run these checks before starting a long job:
+The lightweight checks do not require a full training run:
 
 ```bash
 python -m compileall -q main.py src data_loading scripts
@@ -313,44 +227,28 @@ python scripts/test_paper_protocol.py
 python scripts/test_aaai27_datasets.py --data-dir data
 ```
 
-The checks cover:
-
-- fixed subject split and HC-vs-PD label mapping;
-- six-channel `(B, 6, 4096)` input layout;
-- training-only standardization statistics;
-- feature-cache consistency;
-- CLS exclusion and the 1024-dimensional visual projection;
-- Mantis cross-channel pooling to 512 dimensions;
-- fixed-split classifier behavior.
+They cover the fixed split, label mapping, `(B, 6, 4096)` input shape,
+training-only normalization, feature-cache consistency, CLIP patch pooling,
+visual projection size, and Mantis channel pooling.
 
 ## Outputs
 
-Each run creates a timestamped experiment directory below `--result_dir`. The
-main artifacts include:
+Each run records the command-line configuration, split information, metrics,
+and cached branch features. The main files are:
 
-- `args.json`: complete command-line configuration;
-- `train_val.csv`: validation and test metrics;
-- `splits/Shimmer_11_session11_DRINK_subject_split.csv`: split audit;
-- cached `.npz` branch features below `--feature_cache_dir`.
+```text
+results/shimmer_example_seed2022/
+├── <timestamp>/args.json
+├── <timestamp>/train_val.csv
+└── <timestamp>/splits/Shimmer_11_session11_DRINK_subject_split.csv
 
-Feature caches are keyed by the model and preprocessing configuration. Delete a
-cache only when intentionally forcing feature re-extraction.
+feature_cache/shimmer_example/
+└── ... .npz
+```
 
-## Troubleshooting
-
-- **`Missing required path`**: check that `MODEL_DIR` and `MANTIS_DIR` point to
-  downloaded checkpoint directories, not to their parent directory.
-- **CUDA out of memory**: select another GPU with `GPU=<index>` or reduce
-  `--batch_size` in the direct Python command.
-- **Dataset not found**: run from the repository root or explicitly set
-  `DATA_DIR=/absolute/path/to/repository/data`.
-- **Stale feature dimensions**: remove the relevant ignored feature-cache
-  directory after changing checkpoint, layer, pooling, or image settings.
-- **Hugging Face download failure**: update `huggingface_hub`, confirm network
-  access, and ensure sufficient disk space for the approximately one-billion-
-  parameter CLIP model.
+`results/` and `feature_cache/` are excluded from Git.
 
 ## License
 
-See `LICENSE`. Dataset use is additionally subject to the original dataset
-terms linked above.
+See [LICENSE](LICENSE). Dataset use is also subject to the terms on the source
+pages listed above.

@@ -30,7 +30,7 @@ def main():
     ]
     signature = '{"dataset":"cache-test","vit_layer":14}'
 
-    with tempfile.TemporaryDirectory(prefix="tivit_feature_cache_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="neurosigvit_feature_cache_") as temp_dir:
         cache_path = Path(temp_dir) / "train.npz"
         _save_feature_cache(
             cache_path,

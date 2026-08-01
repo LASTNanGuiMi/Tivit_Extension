@@ -33,7 +33,7 @@ from src.datautils import (
 )
 from src.embedding import concat_embeddings, embed
 from src.mlp_classifier import train_mlp_classifier
-from src.tivit import get_tivit
+from src.neurosigvit import get_neurosigvit
 from src.utils import (
     get_patch_size,
     save_activity_lineplot_samples,
@@ -301,15 +301,15 @@ if __name__ == "__main__":
             patch_sizes = [None]
 
         for p in patch_sizes:
-            tivit_1 = None
-            tivit_2 = None
+            neurosigvit_1 = None
+            neurosigvit_2 = None
 
             if p:
                 print(f"Patch size: {p}")
 
             # Embedding with the NeuroSigViT visual branch (1st ViT configuration)
             if args.vit_1_name:
-                tivit_1 = get_tivit(
+                neurosigvit_1 = get_neurosigvit(
                     model_name=args.vit_1_name,
                     model_layer=args.vit_1_layer,
                     aggregation=args.aggregation,
@@ -317,13 +317,13 @@ if __name__ == "__main__":
                     patch_size=p,
                     image_mode=args.image_mode,
                 )
-                tivit_1 = tivit_1.to(device=device)
-                tivit_1.eval()
+                neurosigvit_1 = neurosigvit_1.to(device=device)
+                neurosigvit_1.eval()
 
                 if args.classifier_type != "mlp":
                     vision_embedding_1 = embed_loader_splits(
-                        tivit_1,
-                        "tivit",
+                        neurosigvit_1,
+                        "neurosigvit",
                         channels,
                         device,
                         train_loader,
@@ -333,7 +333,7 @@ if __name__ == "__main__":
 
             # Embedding with the NeuroSigViT visual branch (2nd ViT configuration)
             if args.vit_2_name:
-                tivit_2 = get_tivit(
+                neurosigvit_2 = get_neurosigvit(
                     model_name=args.vit_2_name,
                     model_layer=args.vit_2_layer,
                     aggregation=args.aggregation,
@@ -341,13 +341,13 @@ if __name__ == "__main__":
                     patch_size=p,
                     image_mode=args.image_mode,
                 )
-                tivit_2 = tivit_2.to(device=device)
-                tivit_2.eval()
+                neurosigvit_2 = neurosigvit_2.to(device=device)
+                neurosigvit_2.eval()
 
                 if args.classifier_type != "mlp":
                     vision_embedding_2 = embed_loader_splits(
-                        tivit_2,
-                        "tivit",
+                        neurosigvit_2,
+                        "neurosigvit",
                         channels,
                         device,
                         train_loader,
@@ -383,8 +383,12 @@ if __name__ == "__main__":
                             cross_attn_query=args.cross_attn_query,
                             mask_prob=args.mask_prob,
                             pretrain_epochs=args.pretrain_epochs,
-                            vision_model_1=tivit_1 if args.vit_1_name else None,
-                            vision_model_2=tivit_2 if args.vit_2_name else None,
+                            vision_model_1=(
+                                neurosigvit_1 if args.vit_1_name else None
+                            ),
+                            vision_model_2=(
+                                neurosigvit_2 if args.vit_2_name else None
+                            ),
                             mantis_model=mantis_model,
                             moment_model=moment_model,
                             val_loader=vali_loader,

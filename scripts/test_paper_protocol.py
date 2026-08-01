@@ -13,7 +13,7 @@ from src.datautils import (  # noqa: E402
     _standardize_and_pad_falltl,
 )
 from src.mlp_classifier import _forward_mantis_batch  # noqa: E402
-from src.tivit import TiViT_OpenCLIP  # noqa: E402
+from src.neurosigvit import NeuroSigViT_OpenCLIP  # noqa: E402
 
 
 class DummyProcessor:
@@ -43,7 +43,7 @@ class DummyMantis(nn.Module):
 
 
 def check_visual_pooling_and_projection():
-    model = TiViT_OpenCLIP(
+    model = NeuroSigViT_OpenCLIP(
         processor=DummyProcessor(),
         vit=DummyOpenCLIP(),
         layer_idx=-1,

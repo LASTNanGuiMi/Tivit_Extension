@@ -183,7 +183,6 @@ checkpoints/
 activity_graph_samples/
 Mantis-8M/
 tmp_dataset_downloads/
-tmp_server_tivit_backup/
 .claude/
 Extra/Mantis-8M/
 Extra/outputs/

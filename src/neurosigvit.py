@@ -409,7 +409,7 @@ def get_processor_vit(model_name):
     return processor, vit
 
 
-def get_tivit(
+def get_neurosigvit(
     model_name,
     model_layer,
     aggregation,
@@ -420,15 +420,15 @@ def get_tivit(
     processor, vit = get_processor_vit(model_name)
 
     if hasattr(vit, "transformer") and hasattr(vit.transformer, "resblocks"):
-        TiViTClass = TiViT_OpenCLIP
+        NeuroSigViTClass = NeuroSigViT_OpenCLIP
     elif hasattr(vit, "encoder") and (
         hasattr(vit.encoder, "layers") or hasattr(vit.encoder, "layer")
     ):
-        TiViTClass = TiViT_HF
+        NeuroSigViTClass = NeuroSigViT_HF
     else:
         raise ValueError("Unsupported model structure.")
 
-    tivit = TiViTClass(
+    neurosigvit = NeuroSigViTClass(
         processor=processor,
         vit=vit,
         layer_idx=model_layer,
@@ -438,10 +438,10 @@ def get_tivit(
         image_mode=image_mode,
     )
 
-    return tivit
+    return neurosigvit
 
 
-class BaseTiViT(nn.Module, ABC):
+class BaseNeuroSigViT(nn.Module, ABC):
     def __init__(
         self, processor, vit, layer_idx, aggregation, patch_size, stride, image_mode
     ):
@@ -620,7 +620,7 @@ class BaseTiViT(nn.Module, ABC):
         return image_input
 
 
-class TiViT_HF(BaseTiViT):
+class NeuroSigViT_HF(BaseNeuroSigViT):
     def __init__(
         self, processor, vit, layer_idx, aggregation, patch_size, stride, image_mode
     ):
@@ -653,7 +653,7 @@ class TiViT_HF(BaseTiViT):
             return torch.stack(outputs.hidden_states, dim=-1)
 
 
-class TiViT_OpenCLIP(BaseTiViT):
+class NeuroSigViT_OpenCLIP(BaseNeuroSigViT):
     def __init__(
         self, processor, vit, layer_idx, aggregation, patch_size, stride, image_mode
     ):

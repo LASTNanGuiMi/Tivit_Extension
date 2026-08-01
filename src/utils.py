@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from torchvision.utils import save_image
 
-from src.tivit import preprocess_graph
+from src.neurosigvit import preprocess_graph
 
 
 def set_random_seed(seed):

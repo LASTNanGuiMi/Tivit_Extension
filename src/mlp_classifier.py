@@ -249,7 +249,7 @@ def _balanced_class_weights(label_indices, num_classes, device):
     return torch.as_tensor(weights, dtype=torch.float32, device=device)
 
 
-def _forward_tivit_batch(model, batch, channels, device):
+def _forward_neurosigvit_batch(model, batch, channels, device):
     if model.image_mode in {
         "multichannel_line_plot",
         "activity_graph",
@@ -308,9 +308,13 @@ def forward_feature_batch(
     features = []
 
     if vision_model_1 is not None:
-        features.append(_forward_tivit_batch(vision_model_1, batch, channels, device))
+        features.append(
+            _forward_neurosigvit_batch(vision_model_1, batch, channels, device)
+        )
     if vision_model_2 is not None:
-        features.append(_forward_tivit_batch(vision_model_2, batch, channels, device))
+        features.append(
+            _forward_neurosigvit_batch(vision_model_2, batch, channels, device)
+        )
     if mantis_model is not None:
         features.append(_forward_mantis_batch(mantis_model, batch, channels, device))
     if moment_model is not None:
