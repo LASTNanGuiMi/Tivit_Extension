@@ -1,0 +1,170 @@
+# NeuroSigViT
+
+**NeuroSigViT** is a multimodal framework for wearable-sensor time-series
+classification. It combines frozen CLIP ViT-H/14 visual representations of
+sensor activity graphs with frozen Mantis-8M temporal representations, then
+trains a lightweight fusion head and MLP classifier.
+
+The maintained artifact covers four datasets: FallTL, UCI HAR,
+`Shimmer_10_session10_AFC`, and `PADS_11_task08_TouchIndex`.
+
+## Selected protocols
+
+| Key | Dataset | Input | Split and endpoint |
+| --- | --- | --- | --- |
+| `falltl` | FallTL | variable-length, 9 channels | stratified file-level 60/20/20; `D=0`, `F=1` |
+| `ucihar` | UCI HAR | `(N,6,128)` | official subject-disjoint test split; validation subjects drawn from official training subjects |
+| `shimmer10` | `Shimmer_10_session10_AFC` | `(N,6,4096)` | subject-level 69/23/25; HC versus MildPD/ModeratePD |
+| `pads11` | `PADS_11_task08_TouchIndex` | `(N,6,976)` | subject-level 280/92/97 source split; Healthy versus Parkinson uses 212/70/73 after excluding OMD |
+
+The fixed data-split seed is 42. The launcher seed, which controls model
+initialization and result naming, defaults to 2022. Training-only statistics
+are used whenever normalization is required. See `DATA_PROCESSING.md` for the
+full protocol.
+
+## Repository layout
+
+```text
+NeuroSigViT-main/
+|-- main.py
+|-- src/
+|   |-- neurosigvit.py
+|   |-- datautils.py
+|   `-- privacy.py
+|-- assets/
+|   `-- neurosigvit_method.jpg
+|-- data/
+|   |-- Neuro/AAAI_Data/
+|   |   |-- Shimmer_10_session10_AFC/
+|   |   `-- PADS_11_task08_TouchIndex/
+|   |-- FallTL                 # machine-local relative link
+|   `-- UCI HAR Dataset        # machine-local relative link
+|-- data_loading/
+|   `-- split_reference_seed42.csv
+|-- scripts/
+|   |-- run_selected_dataset.sh
+|   |-- run_falltl_example.sh
+|   |-- run_ucihar_example.sh
+|   |-- run_shimmer_example.sh
+|   |-- run_pads_example.sh
+|   `-- test_*.py
+|-- DATA_PROCESSING.md
+|-- ANONYMITY.md
+|-- requirements.txt
+`-- LICENSE
+```
+
+The local dataset directories and links are runtime inputs and are excluded
+from anonymous source exports.
+
+## Environment
+
+Create an environment from the repository root:
+
+```bash
+conda create -n neurosigvit python=3.11 -y
+conda activate neurosigvit
+python -m pip install -r requirements.txt
+```
+
+The checked server environment uses Python 3.11, PyTorch 2.7.1, CUDA 12.6,
+`open_clip_torch` 2.32.0, `mantis-tsfm` 1.0.0, and `transformers` 4.33.3.
+
+## Checkpoints
+
+The launcher accepts local checkpoint paths through `MODEL_DIR` and
+`MANTIS_DIR`:
+
+```bash
+MODEL_DIR=/path/to/CLIP-ViT-H-14-laion2B-s32B-b79K
+MANTIS_DIR=/path/to/Mantis-8M
+```
+
+The corresponding public models are
+[`laion/CLIP-ViT-H-14-laion2B-s32B-b79K`](https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K)
+and [`paris-noah/Mantis-8M`](https://huggingface.co/paris-noah/Mantis-8M).
+
+## Data sources
+
+| Dataset | Source |
+| --- | --- |
+| Shimmer / PDWearML | [IEEE DataPort](https://ieee-dataport.org/documents/pdwearml-leveraging-daily-activities-rapid-free-living-parkinsons-disease-severity), [PDWearML repository](https://github.com/wang-xulong/PDWearML) |
+| PADS | [PhysioNet PADS v1.0.0](https://physionet.org/content/parkinsons-disease-smartwatch/1.0.0/) |
+| FallTL | [Zenodo record 17552449](https://zenodo.org/records/17552449) |
+| UCI HAR | [UCI repository](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones) |
+
+The original licenses and access terms apply.
+
+### PADS11 endpoint
+
+The selected PADS experiment uses
+`PADS_11_task08_TouchIndex`, the index-finger touching task from the
+Parkinson's Disease Smartwatch (PADS) dataset. Each processed sample contains
+six wrist inertial channels and 976 time steps. The fixed seed-42 split is
+subject-disjoint and contains 280/92/97 source subjects in the
+training/validation/test partitions.
+
+For the reported binary clinical endpoint, only Healthy and Parkinson samples
+are retained: `Healthy=0` and `Parkinson=1`. Other Movement Disorders (OMD)
+samples are excluded without being merged into either class. This leaves
+212/70/73 samples, with class counts 47/165, 15/55, and 17/56 for
+Healthy/Parkinson in the three partitions. Channel normalization statistics
+are fitted on the retained training samples only and then reused for validation
+and test data.
+
+Run only this endpoint with:
+
+```bash
+DRY_RUN=1 bash scripts/run_selected_dataset.sh pads11
+```
+
+## Running experiments
+
+From the repository root, first print each command without starting training:
+
+```bash
+DRY_RUN=1 bash scripts/run_selected_dataset.sh falltl
+DRY_RUN=1 bash scripts/run_selected_dataset.sh ucihar
+DRY_RUN=1 bash scripts/run_selected_dataset.sh shimmer10
+DRY_RUN=1 bash scripts/run_selected_dataset.sh pads11
+```
+
+Remove `DRY_RUN=1` only after checking GPU availability. The convenience
+wrappers are equivalent:
+
+```bash
+bash scripts/run_falltl_example.sh
+bash scripts/run_ucihar_example.sh
+bash scripts/run_shimmer_example.sh
+bash scripts/run_pads_example.sh
+```
+
+`GPU`, `SEED`, `EPOCHS`, `PATIENCE`, `RESULT_DIR`, `FEATURE_CACHE_DIR`,
+`MODEL_DIR`, `MANTIS_DIR`, `DATA_DIR`, and `PYTHON_BIN` can be overridden as
+environment variables. Additional `main.py` arguments may follow the dataset
+key.
+
+## Verification
+
+```bash
+python -m compileall -q main.py src data_loading scripts
+bash -n scripts/run_selected_dataset.sh
+python scripts/test_anonymity.py
+python scripts/check_anonymity.py
+python scripts/test_paper_protocol.py
+python scripts/test_aaai27_datasets.py --data-dir data/Neuro
+```
+
+These checks cover the selected subject splits and clinical endpoints,
+training-only normalization, CLIP patch-token pooling, Mantis channel pooling,
+feature-cache behavior, and anonymous runtime metadata.
+
+## Anonymous release
+
+Follow `ANONYMITY.md`. Do not submit datasets, local links, results, feature
+caches, checkpoints, logs, environment files, or Git metadata.
+
+## License
+
+Code is released under the terms in [LICENSE](LICENSE). Dataset use remains
+subject to the original sources above.

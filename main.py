@@ -1,0 +1,537 @@
+import json
+import os
+import warnings
+from datetime import datetime
+
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+# Older Transformers releases emit this during import and include the local
+# site-packages path in stderr. It is unrelated to this project's behavior and
+# can disclose a reviewer's or author's machine path in captured run logs.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.utils\._pytree\._register_pytree_node` is deprecated\..*",
+    category=FutureWarning,
+    module=r"transformers\.utils\.generic",
+)
+
+import numpy as np
+import torch
+import torch.multiprocessing
+
+torch.multiprocessing.set_sharing_strategy("file_system")
+
+from aeon.datasets.tsc_datasets import multivariate, univariate
+from mantis.architecture import Mantis8M
+from mantis.trainer import MantisTrainer
+from momentfm import MOMENTPipeline
+from tqdm import tqdm
+
+from src.analysis import (
+    get_intrinsic_dimension,
+    get_principal_components,
+    measure_alignment,
+)
+from src.arguments import parse_args
+from src.classifier import train_classifier
+from src.datautils import (
+    AAAI27_DATASET_NAMES,
+    get_falltl_comparison_dataloaders,
+    get_aaai27_dataloaders,
+    get_uci_har_official_dataloaders,
+    get_dataloader,
+    write_falltl_comparison_split_audit,
+    write_aaai27_split_audit,
+    write_uci_har_subject_split_audit,
+)
+from src.embedding import concat_embeddings, embed
+from src.mlp_classifier import train_mlp_classifier
+from src.neurosigvit import get_neurosigvit
+from src.privacy import anonymize_runtime_arguments, anonymize_runtime_value
+from src.utils import (
+    get_patch_size,
+    save_activity_lineplot_samples,
+    save_activity_graph_samples,
+    set_random_seed,
+    write_result_table,
+    write_split_indices,
+)
+
+
+def model_slug(model_name):
+    return os.path.basename(os.path.normpath(model_name)).replace("-", "_")
+
+
+def embed_loader_splits(
+    model,
+    model_type,
+    channels,
+    device,
+    train_loader,
+    test_loader,
+    vali_loader=None,
+):
+    loaders = [train_loader]
+    if vali_loader is not None:
+        loaders.append(vali_loader)
+    loaders.append(test_loader)
+    return tuple(
+        embed(model, loader, model_type, channels, device) for loader in loaders
+    )
+
+
+def build_feature_cache_signature(args, dataset, channels, patch_size):
+    has_fixed_split = args.datasets == "aaai27" or (
+        args.datasets == "falltl" and args.falltl_protocol == "comparison_binary"
+    ) or (
+        args.datasets == "uci" and args.uci_protocol == "official_subject"
+    )
+    configuration = {
+        "schema": 3,
+        "dataset_group": args.datasets,
+        "dataset": dataset,
+        "dataset_names": args.dataset_names,
+        "channels": channels,
+        "label_mode": args.aaai27_label_mode,
+        "falltl_protocol": args.falltl_protocol,
+        "har_channels": args.har_channels,
+        "uci_protocol": args.uci_protocol,
+        "split_seed": 42 if has_fixed_split else args.random_seed,
+        "custom_test_ratio": args.custom_test_ratio,
+        "window_size": args.window_size,
+        "window_stride": args.window_stride,
+        "max_windows_per_file": args.max_windows_per_file,
+        "image_mode": args.image_mode,
+        "aggregation": args.aggregation,
+        "patch_size": patch_size,
+        "stride": args.stride,
+        "vit_1_name": anonymize_runtime_value(args.vit_1_name),
+        "vit_1_layer": args.vit_1_layer,
+        "vit_2_name": anonymize_runtime_value(args.vit_2_name),
+        "vit_2_layer": args.vit_2_layer,
+        "mantis_name": (
+            anonymize_runtime_value(args.mantis_name) if args.mantis else None
+        ),
+        "moment": args.moment,
+    }
+    return json.dumps(configuration, sort_keys=True, separators=(",", ":"))
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    set_random_seed(args.random_seed)
+
+    timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{os.getpid()}"
+
+    available_models = []
+
+    if args.vit_1_name:
+        available_models.append(model_slug(args.vit_1_name))
+    if args.vit_2_name:
+        available_models.append(model_slug(args.vit_2_name))
+    if args.mantis:
+        available_models.append("mantis")
+    if args.moment:
+        available_models.append(f"moment_{args.moment}")
+
+    has_vision_modality = bool(args.vit_1_name or args.vit_2_name)
+    has_timeseries_modality = bool(args.mantis or args.moment)
+
+    if not has_vision_modality and not has_timeseries_modality:
+        raise ValueError(
+            "At least one modality must be enabled: use a ViT model for vision, "
+            "or enable --mantis/--moment for raw time-series embeddings."
+        )
+
+    enabled_modalities = []
+    if has_vision_modality:
+        enabled_modalities.append(f"vision:{args.image_mode}")
+    if has_timeseries_modality:
+        ts_models = []
+        if args.mantis:
+            ts_models.append("mantis")
+        if args.moment:
+            ts_models.append(f"moment-{args.moment}")
+        enabled_modalities.append(f"time_series:{'+'.join(ts_models)}")
+    print("Enabled modalities:", ", ".join(enabled_modalities))
+
+    available_models = "_".join(available_models)
+
+    result_dir = f"{args.result_dir}/{timestamp}_{args.datasets}_{available_models}_{args.classifier_type}"
+    os.makedirs(result_dir, exist_ok=False)
+
+    # Save parsed arguments as json dictionary
+    args_dict = anonymize_runtime_arguments(args)
+    with open(f"{result_dir}/args.json", "w") as f:
+        json.dump(args_dict, f, indent=4)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if args.datasets == "ucr":
+        datasets = univariate
+    elif args.datasets == "uea":
+        datasets = multivariate
+    elif args.datasets == "uci":
+        datasets = ["UCIHAR"]
+    elif args.datasets == "flaap":
+        datasets = ["FLAAP"]
+    elif args.datasets == "falltl":
+        datasets = ["FallTL"]
+    elif args.datasets == "feng":
+        datasets = ["Feng"]
+    elif args.datasets == "aaai27":
+        datasets = list(AAAI27_DATASET_NAMES)
+    else:
+        raise ValueError(
+            "Only UCR, UEA, UCI, FLAAP, FallTL, Feng, and AAAI27 benchmarks "
+            "are available."
+        )
+
+    if args.dataset_names:
+        unavailable = sorted(set(args.dataset_names) - set(datasets))
+        if unavailable:
+            raise ValueError(
+                f"Dataset(s) not found in {args.datasets.upper()}: {unavailable}"
+            )
+        datasets = args.dataset_names
+
+    for dataset in tqdm(datasets):
+        print(dataset)
+
+        fixed_validation_split = False
+        vali_loader = None
+        vali_labels = None
+        if args.datasets == "aaai27":
+            fixed_validation_split = True
+            aaai27_bundle = get_aaai27_dataloaders(dataset, args)
+            train_loader = aaai27_bundle.train_loader
+            train_labels = aaai27_bundle.train_labels
+            vali_loader = aaai27_bundle.vali_loader
+            vali_labels = aaai27_bundle.vali_labels
+            test_loader = aaai27_bundle.test_loader
+            test_labels = aaai27_bundle.test_labels
+            audit_path = write_aaai27_split_audit(aaai27_bundle, result_dir)
+            print(f"Subject split audit: {audit_path}")
+        elif args.datasets == "uci" and args.uci_protocol == "official_subject":
+            fixed_validation_split = True
+            uci_bundle = get_uci_har_official_dataloaders(args)
+            train_loader = uci_bundle.train_loader
+            train_labels = uci_bundle.train_labels
+            vali_loader = uci_bundle.vali_loader
+            vali_labels = uci_bundle.vali_labels
+            test_loader = uci_bundle.test_loader
+            test_labels = uci_bundle.test_labels
+            audit_path = write_uci_har_subject_split_audit(uci_bundle, result_dir)
+            print(f"UCI HAR subject split audit: {audit_path}")
+        elif (
+            args.datasets == "falltl"
+            and args.falltl_protocol == "comparison_binary"
+        ):
+            fixed_validation_split = True
+            falltl_bundle = get_falltl_comparison_dataloaders(args)
+            train_loader = falltl_bundle.train_loader
+            train_labels = falltl_bundle.train_labels
+            vali_loader = falltl_bundle.vali_loader
+            vali_labels = falltl_bundle.vali_labels
+            test_loader = falltl_bundle.test_loader
+            test_labels = falltl_bundle.test_labels
+            audit_path = write_falltl_comparison_split_audit(
+                falltl_bundle, result_dir
+            )
+            print(f"FallTL split audit: {audit_path}")
+        else:
+            train_loader, train_labels, test_loader, test_labels = get_dataloader(
+                dataset, args
+            )
+
+        sample_count = len(train_loader.dataset) + len(test_loader.dataset)
+        if vali_loader is not None:
+            sample_count += len(vali_loader.dataset)
+        print("Samples: ", sample_count)
+        if args.image_mode == "activity_graph":
+            save_activity_graph_samples(
+                result_dir=result_dir,
+                dataset=dataset,
+                dataloader=train_loader,
+                num_samples=args.save_activity_graph_samples,
+            )
+            save_activity_lineplot_samples(
+                result_dir=result_dir,
+                dataset=dataset,
+                dataloader=train_loader,
+                num_samples=args.save_activity_lineplot_samples,
+            )
+        elif args.image_mode == "multichannel_line_plot":
+            save_activity_lineplot_samples(
+                result_dir=result_dir,
+                dataset=dataset,
+                dataloader=train_loader,
+                num_samples=args.save_activity_lineplot_samples,
+            )
+        channels, T = train_loader.dataset[0][0].shape
+
+        mantis_embedding = None
+        moment_embedding = None
+        vision_embedding_1 = None
+        vision_embedding_2 = None
+        mantis_model = None
+        moment_model = None
+
+        # Embedding with Mantis TSFM
+        if args.mantis:
+            network = Mantis8M(device=device)
+            network = network.from_pretrained(args.mantis_name)
+            network = network.to(device)
+
+            if args.classifier_type == "mlp":
+                mantis_model = network
+            else:
+                mantis_model = MantisTrainer(device=device, network=network)
+                mantis_embedding = embed_loader_splits(
+                    mantis_model,
+                    "mantis",
+                    channels,
+                    device,
+                    train_loader,
+                    test_loader,
+                    vali_loader=vali_loader,
+                )
+
+        # Embedding with MOMENT TSFM
+        if args.moment:
+            moment = MOMENTPipeline.from_pretrained(
+                f"AutonLab/MOMENT-1-{args.moment}",
+                model_kwargs={"task_name": "embedding"},
+            )
+            moment.init()
+            moment.to(device).float()
+            moment.eval()
+            moment_model = moment
+
+            if args.classifier_type != "mlp":
+                moment_embedding = embed_loader_splits(
+                    moment,
+                    "moment",
+                    channels,
+                    device,
+                    train_loader,
+                    test_loader,
+                    vali_loader=vali_loader,
+                )
+
+        patch_sizes = get_patch_size(patch_size=args.patch_size, T=T)
+        if args.image_mode in {
+            "line_plot",
+            "multichannel_line_plot",
+            "activity_graph",
+            "activity_matrix",
+        }:
+            patch_sizes = [None]
+
+        for p in patch_sizes:
+            neurosigvit_1 = None
+            neurosigvit_2 = None
+
+            if p:
+                print(f"Patch size: {p}")
+
+            # Embedding with the NeuroSigViT visual branch (1st ViT configuration)
+            if args.vit_1_name:
+                neurosigvit_1 = get_neurosigvit(
+                    model_name=args.vit_1_name,
+                    model_layer=args.vit_1_layer,
+                    aggregation=args.aggregation,
+                    stride=args.stride,
+                    patch_size=p,
+                    image_mode=args.image_mode,
+                )
+                neurosigvit_1 = neurosigvit_1.to(device=device)
+                neurosigvit_1.eval()
+
+                if args.classifier_type != "mlp":
+                    vision_embedding_1 = embed_loader_splits(
+                        neurosigvit_1,
+                        "neurosigvit",
+                        channels,
+                        device,
+                        train_loader,
+                        test_loader,
+                        vali_loader=vali_loader,
+                    )
+
+            # Embedding with the NeuroSigViT visual branch (2nd ViT configuration)
+            if args.vit_2_name:
+                neurosigvit_2 = get_neurosigvit(
+                    model_name=args.vit_2_name,
+                    model_layer=args.vit_2_layer,
+                    aggregation=args.aggregation,
+                    stride=args.stride,
+                    patch_size=p,
+                    image_mode=args.image_mode,
+                )
+                neurosigvit_2 = neurosigvit_2.to(device=device)
+                neurosigvit_2.eval()
+
+                if args.classifier_type != "mlp":
+                    vision_embedding_2 = embed_loader_splits(
+                        neurosigvit_2,
+                        "neurosigvit",
+                        channels,
+                        device,
+                        train_loader,
+                        test_loader,
+                        vali_loader=vali_loader,
+                    )
+
+            # Linear classification
+            if args.classifier_type:
+                if args.classifier_type == "mlp":
+                    val_metrics, test_metrics, train_indices, val_indices = (
+                        train_mlp_classifier(
+                            train_loader=train_loader,
+                            train_labels=train_labels,
+                            test_loader=test_loader,
+                            test_labels=test_labels,
+                            channels=channels,
+                            device=device,
+                            batch_size=args.batch_size,
+                            random_seed=args.random_seed,
+                            val_ratio=args.val_ratio,
+                            hidden_dim=args.mlp_hidden_dim,
+                            num_layers=args.mlp_num_layers,
+                            dropout=args.mlp_dropout,
+                            lr=args.mlp_lr,
+                            weight_decay=args.mlp_weight_decay,
+                            class_weight=args.mlp_class_weight,
+                            epochs=args.mlp_epochs,
+                            early_stop_patience=args.mlp_early_stop_patience,
+                            modal_interaction=args.modal_interaction,
+                            fusion_dim=args.fusion_dim,
+                            fusion_heads=args.fusion_heads,
+                            cross_attn_query=args.cross_attn_query,
+                            mask_prob=args.mask_prob,
+                            pretrain_epochs=args.pretrain_epochs,
+                            vision_model_1=(
+                                neurosigvit_1 if args.vit_1_name else None
+                            ),
+                            vision_model_2=(
+                                neurosigvit_2 if args.vit_2_name else None
+                            ),
+                            mantis_model=mantis_model,
+                            moment_model=moment_model,
+                            val_loader=vali_loader,
+                            val_labels=vali_labels,
+                            feature_cache_dir=(
+                                os.path.join(args.feature_cache_dir, dataset)
+                                if args.feature_cache_dir
+                                else None
+                            ),
+                            feature_cache_signature=build_feature_cache_signature(
+                                args,
+                                dataset,
+                                channels,
+                                p,
+                            ),
+                        )
+                    )
+                else:
+                    combined_embeddings = concat_embeddings(
+                        vision_embedding_1,
+                        vision_embedding_2,
+                        mantis_embedding,
+                        moment_embedding,
+                    )
+
+                    if fixed_validation_split:
+                        train_embeds, vali_embeds, test_embeds = combined_embeddings
+                    else:
+                        train_embeds, test_embeds = combined_embeddings
+                        vali_embeds = None
+
+                    val_metrics, test_metrics, train_indices, val_indices = train_classifier(
+                        train_embeds,
+                        train_labels,
+                        test_embeds,
+                        test_labels,
+                        args.classifier_type,
+                        args.random_seed,
+                        args.val_ratio,
+                        val_embeds=vali_embeds,
+                        val_labels=vali_labels,
+                    )
+                print(
+                    "Val metrics: "
+                    + ", ".join(
+                        f"{metric}={value:.4f}"
+                        for metric, value in val_metrics.items()
+                    )
+                )
+                print(
+                    "Test metrics: "
+                    + ", ".join(
+                        f"{metric}={value:.4f}"
+                        for metric, value in test_metrics.items()
+                    )
+                )
+
+                if not fixed_validation_split:
+                    write_split_indices(
+                        result_dir=result_dir,
+                        dataset=dataset,
+                        train_indices=train_indices,
+                        val_indices=val_indices,
+                        random_seed=args.random_seed,
+                        val_ratio=args.val_ratio,
+                    )
+
+                write_result_table(
+                    result_dir=result_dir,
+                    dataset=dataset,
+                    val_metrics=val_metrics,
+                    test_metrics=test_metrics,
+                    patch_size=p,
+                    image_mode=args.image_mode,
+                )
+
+            # Measure alignment of representation spaces using mutual kNN
+            elif args.measure_alignment:
+                measure_alignment(
+                    mantis_embedding,
+                    moment_embedding,
+                    vision_embedding_1,
+                    vision_embedding_2,
+                    dataset,
+                    result_dir,
+                )
+
+            # Compute intrinsic dimension or number of principal components
+            elif args.get_intrinsic_dimension or args.get_principal_components:
+                embeddings = [
+                    e
+                    for e in [
+                        vision_embedding_1,
+                        vision_embedding_2,
+                        mantis_embedding,
+                        moment_embedding,
+                    ]
+                    if e is not None
+                ]
+
+                assert (
+                    len(embeddings) == 1
+                ), "Compute intrinsic dimensionality only for one model."
+
+                embedding = np.concatenate(embeddings[0], axis=0).transpose(2, 0, 1)
+
+                if args.get_intrinsic_dimension:
+                    get_intrinsic_dimension(embedding, dataset, result_dir)
+                if args.get_principal_components:
+                    get_principal_components(embedding, dataset, result_dir)
+
+            else:
+                raise ValueError(
+                    "Please choose: linear probing, intrinsic dimension, principal components, alignment."
+                )
+
+            torch.cuda.empty_cache()
