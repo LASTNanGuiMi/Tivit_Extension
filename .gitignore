@@ -187,6 +187,15 @@ tmp_dataset_downloads/
 Extra/Mantis-8M/
 Extra/outputs/
 
+# Machine-local dataset links used by the experiment wrappers
+data/FallTL
+data/UCI HAR Dataset
+data/Neuro/
+
+# Anonymous artifact staging output
+anonymous_artifact/
+anonymous_artifact.*
+
 .vscode/launch.json
 .vscode/settings.json
 .idea/

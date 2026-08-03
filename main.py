@@ -1,8 +1,19 @@
 import json
 import os
+import warnings
 from datetime import datetime
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+# Older Transformers releases emit this during import and include the local
+# site-packages path in stderr. It is unrelated to this project's behavior and
+# can disclose a reviewer's or author's machine path in captured run logs.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.utils\._pytree\._register_pytree_node` is deprecated\..*",
+    category=FutureWarning,
+    module=r"transformers\.utils\.generic",
+)
 
 import numpy as np
 import torch
@@ -27,13 +38,16 @@ from src.datautils import (
     AAAI27_DATASET_NAMES,
     get_falltl_comparison_dataloaders,
     get_aaai27_dataloaders,
+    get_uci_har_official_dataloaders,
     get_dataloader,
     write_falltl_comparison_split_audit,
     write_aaai27_split_audit,
+    write_uci_har_subject_split_audit,
 )
 from src.embedding import concat_embeddings, embed
 from src.mlp_classifier import train_mlp_classifier
 from src.neurosigvit import get_neurosigvit
+from src.privacy import anonymize_runtime_arguments, anonymize_runtime_value
 from src.utils import (
     get_patch_size,
     save_activity_lineplot_samples,
@@ -69,6 +83,8 @@ def embed_loader_splits(
 def build_feature_cache_signature(args, dataset, channels, patch_size):
     has_fixed_split = args.datasets == "aaai27" or (
         args.datasets == "falltl" and args.falltl_protocol == "comparison_binary"
+    ) or (
+        args.datasets == "uci" and args.uci_protocol == "official_subject"
     )
     configuration = {
         "schema": 3,
@@ -89,11 +105,13 @@ def build_feature_cache_signature(args, dataset, channels, patch_size):
         "aggregation": args.aggregation,
         "patch_size": patch_size,
         "stride": args.stride,
-        "vit_1_name": args.vit_1_name,
+        "vit_1_name": anonymize_runtime_value(args.vit_1_name),
         "vit_1_layer": args.vit_1_layer,
-        "vit_2_name": args.vit_2_name,
+        "vit_2_name": anonymize_runtime_value(args.vit_2_name),
         "vit_2_layer": args.vit_2_layer,
-        "mantis_name": args.mantis_name if args.mantis else None,
+        "mantis_name": (
+            anonymize_runtime_value(args.mantis_name) if args.mantis else None
+        ),
         "moment": args.moment,
     }
     return json.dumps(configuration, sort_keys=True, separators=(",", ":"))
@@ -144,7 +162,7 @@ if __name__ == "__main__":
     os.makedirs(result_dir, exist_ok=False)
 
     # Save parsed arguments as json dictionary
-    args_dict = vars(args)
+    args_dict = anonymize_runtime_arguments(args)
     with open(f"{result_dir}/args.json", "w") as f:
         json.dump(args_dict, f, indent=4)
 
@@ -195,6 +213,17 @@ if __name__ == "__main__":
             test_labels = aaai27_bundle.test_labels
             audit_path = write_aaai27_split_audit(aaai27_bundle, result_dir)
             print(f"Subject split audit: {audit_path}")
+        elif args.datasets == "uci" and args.uci_protocol == "official_subject":
+            fixed_validation_split = True
+            uci_bundle = get_uci_har_official_dataloaders(args)
+            train_loader = uci_bundle.train_loader
+            train_labels = uci_bundle.train_labels
+            vali_loader = uci_bundle.vali_loader
+            vali_labels = uci_bundle.vali_labels
+            test_loader = uci_bundle.test_loader
+            test_labels = uci_bundle.test_labels
+            audit_path = write_uci_har_subject_split_audit(uci_bundle, result_dir)
+            print(f"UCI HAR subject split audit: {audit_path}")
         elif (
             args.datasets == "falltl"
             and args.falltl_protocol == "comparison_binary"

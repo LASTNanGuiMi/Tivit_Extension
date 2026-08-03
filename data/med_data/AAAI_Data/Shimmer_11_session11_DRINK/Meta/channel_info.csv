@@ -1,7 +1,0 @@
-﻿channel_index,channel_name,source_unit,filtering,unit_conversion
-0,Accel_WR_X_CAL,m/(s^2),none,none
-1,Accel_WR_Y_CAL,m/(s^2),none,none
-2,Accel_WR_Z_CAL,m/(s^2),none,none
-3,Gyro_X_CAL,deg/s,none,none
-4,Gyro_Y_CAL,deg/s,none,none
-5,Gyro_Z_CAL,deg/s,none,none

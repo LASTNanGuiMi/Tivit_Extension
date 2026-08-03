@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.utils\._pytree\._register_pytree_node` is deprecated\..*",
+    category=FutureWarning,
+    module=r"transformers\.utils\.generic",
+)
 
 import numpy as np
 import torch
@@ -10,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.datautils import (  # noqa: E402
     _interpolate_falltl_sequence,
+    _split_uci_har_train_subjects,
     _standardize_and_pad_falltl,
 )
 from src.mlp_classifier import _forward_mantis_batch  # noqa: E402
@@ -98,10 +107,22 @@ def check_falltl_preprocessing():
     np.testing.assert_allclose(train[0, :, 3], 0.0)
 
 
+def check_uci_subject_split():
+    sample_subjects = np.repeat(np.arange(1, 22), 3)
+    train_subjects, validation_subjects = _split_uci_har_train_subjects(
+        sample_subjects, val_ratio=0.25, split_seed=42
+    )
+    assert len(train_subjects) == 16
+    assert len(validation_subjects) == 5
+    assert not set(train_subjects) & set(validation_subjects)
+    assert set(train_subjects) | set(validation_subjects) == set(range(1, 22))
+
+
 def main():
     check_visual_pooling_and_projection()
     check_mantis_channel_pooling()
     check_falltl_preprocessing()
+    check_uci_subject_split()
     print("PAPER PROTOCOL CHECKS PASSED")
 
 

@@ -16,7 +16,7 @@ VIT_NAME = [
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Time Vision Transformer.")
+    parser = argparse.ArgumentParser(description="NeuroSigViT.")
 
     parser.add_argument(
         "--vit_1_name",
@@ -231,8 +231,9 @@ def parse_args():
         default="official_subject",
         help=(
             "UCI-HAR split protocol. official_subject preserves the published "
-            "subject-disjoint train/test files and draws validation only from "
-            "the training portion. legacy_resplit is retained only to inspect "
+            "subject-disjoint test partition and draws a fixed seed-42, "
+            "subject-disjoint validation split only from official training subjects. "
+            "legacy_resplit is retained only to inspect "
             "historical runs that merged and randomly re-split both partitions."
         ),
     )
@@ -263,12 +264,13 @@ def parse_args():
     parser.add_argument(
         "--falltl_protocol",
         choices=["legacy_windows", "comparison_binary"],
-        default="legacy_windows",
+        default="comparison_binary",
         help=(
             "FallTL data protocol. comparison_binary uses one variable-length "
             "sequence per CSV, D/F binary labels, linear interpolation, "
             "training-split channel statistics, zero padding, and a fixed "
-            "seed-42 60/20/20 stratified sample-level split."
+            "seed-42 60/20/20 stratified file-level split. legacy_windows is "
+            "retained only to inspect historical window-level runs."
         ),
     )
 

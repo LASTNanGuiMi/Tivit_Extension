@@ -68,6 +68,8 @@ AAAI27_DATASET_NAMES = (
     "mPowerOutbound",
     "PADS_09_task06_DrinkGlas",
     "PADS_10_task07_CrossArms",
+    "PADS_11_task08_TouchIndex",
+    "Shimmer_10_session10_AFC",
     "Shimmer_11_session11_DRINK",
     "Shimmer_12_session12_PICK",
 )
@@ -77,6 +79,8 @@ AAAI27_EXPECTED_SPLIT_SAMPLES = {
     "mPowerOutbound": (15289, 5278, 5193),
     "PADS_09_task06_DrinkGlas": (280, 92, 97),
     "PADS_10_task07_CrossArms": (280, 92, 97),
+    "PADS_11_task08_TouchIndex": (280, 92, 97),
+    "Shimmer_10_session10_AFC": (69, 23, 25),
     "Shimmer_11_session11_DRINK": (77, 25, 28),
     "Shimmer_12_session12_PICK": (65, 21, 25),
 }
@@ -90,6 +94,22 @@ AAAI27_DYNAMIC_DATASET_SPECS = {
         },
         "expected_subject_counts": (280, 92, 97),
         "expected_sample_count": 469,
+    },
+    "PADS_11_task08_TouchIndex": {
+        "sequence_length": 976,
+        "label_names": {
+            0: "Healthy",
+            1: "Parkinson",
+            2: "OtherMovementDisorders",
+        },
+        "expected_subject_counts": (280, 92, 97),
+        "expected_sample_count": 469,
+    },
+    "Shimmer_10_session10_AFC": {
+        "sequence_length": 4096,
+        "label_names": {0: "HC", 1: "MildPD", 2: "ModeratePD"},
+        "expected_subject_counts": (69, 23, 25),
+        "expected_sample_count": 117,
     },
     "Shimmer_12_session12_PICK": {
         "sequence_length": 4096,
@@ -133,6 +153,20 @@ class FallTLComparisonBundle:
     train_files: list[str]
     vali_files: list[str]
     test_files: list[str]
+
+
+@dataclass
+class UCIHARSubjectBundle:
+    train_loader: DataLoader
+    train_labels: np.ndarray
+    vali_loader: DataLoader
+    vali_labels: np.ndarray
+    test_loader: DataLoader
+    test_labels: np.ndarray
+    train_subjects: list[int]
+    vali_subjects: list[int]
+    test_subjects: list[int]
+    har_channels: str
 
 
 def linear_interpolation(data):
@@ -244,6 +278,128 @@ def load_uci_har_split(data_dir, split, signal_files=UCI_HAR_SIGNAL_FILES):
     labels = np.loadtxt(labels_path, dtype=np.int64) - 1
 
     return data, labels
+
+
+def load_uci_har_subjects(data_dir, split):
+    uci_dir = find_uci_har_dir(data_dir)
+    subjects_path = os.path.join(uci_dir, split, f"subject_{split}.txt")
+    if not os.path.isfile(subjects_path):
+        raise FileNotFoundError(f"Missing UCI HAR subject file: {subjects_path}")
+    subjects = np.loadtxt(subjects_path, dtype=np.int64)
+    return np.atleast_1d(subjects)
+
+
+def _resolve_uci_har_channel_spec(har_channels):
+    if har_channels == "all":
+        return UCI_HAR_SIGNAL_FILES, list(range(9)), 9
+    if har_channels == "acc_gyro":
+        return UCI_HAR_ACC_GYRO_SIGNAL_FILES, UCI_HAR_ACC_GYRO_INDICES, 6
+    raise ValueError(f"Unsupported HAR channel subset: {har_channels}")
+
+
+def _split_uci_har_train_subjects(subject_ids, val_ratio, split_seed=42):
+    if not 0 < val_ratio < 1:
+        raise ValueError(f"Validation ratio must be between 0 and 1, got {val_ratio}.")
+    unique_subjects = np.unique(np.asarray(subject_ids, dtype=np.int64))
+    if len(unique_subjects) < 2:
+        raise ValueError("UCI HAR subject-level validation needs at least two subjects.")
+
+    shuffled = unique_subjects.copy()
+    np.random.default_rng(split_seed).shuffle(shuffled)
+    validation_count = int(len(shuffled) * val_ratio)
+    validation_count = min(max(validation_count, 1), len(shuffled) - 1)
+    validation_subjects = np.sort(shuffled[:validation_count])
+    train_subjects = np.sort(shuffled[validation_count:])
+    return train_subjects, validation_subjects
+
+
+def get_uci_har_official_dataloaders(args):
+    har_channels = getattr(args, "har_channels", "all")
+    signal_files, _, expected_channels = _resolve_uci_har_channel_spec(har_channels)
+    uci_dir = find_uci_har_dir(args.data_dir)
+
+    official_train_data, official_train_labels = load_uci_har_split(
+        uci_dir, "train", signal_files=signal_files
+    )
+    test_data, test_labels = load_uci_har_split(
+        uci_dir, "test", signal_files=signal_files
+    )
+    official_train_subjects = load_uci_har_subjects(uci_dir, "train")
+    test_sample_subjects = load_uci_har_subjects(uci_dir, "test")
+    if len(official_train_subjects) != len(official_train_data):
+        raise ValueError("UCI HAR train subjects and samples have different lengths.")
+    if len(test_sample_subjects) != len(test_data):
+        raise ValueError("UCI HAR test subjects and samples have different lengths.")
+
+    train_subjects, vali_subjects = _split_uci_har_train_subjects(
+        official_train_subjects,
+        getattr(args, "val_ratio", 0.25),
+        split_seed=42,
+    )
+    test_subjects = np.unique(test_sample_subjects)
+    if (
+        np.intersect1d(train_subjects, vali_subjects).size
+        or np.intersect1d(train_subjects, test_subjects).size
+        or np.intersect1d(vali_subjects, test_subjects).size
+    ):
+        raise AssertionError("UCI HAR subject leakage detected between splits.")
+
+    train_mask = np.isin(official_train_subjects, train_subjects)
+    vali_mask = np.isin(official_train_subjects, vali_subjects)
+    train_data = official_train_data[train_mask]
+    train_labels = official_train_labels[train_mask]
+    vali_data = official_train_data[vali_mask]
+    vali_labels = official_train_labels[vali_mask]
+    if train_data.shape[1] != expected_channels:
+        raise ValueError(
+            f"Expected UCI HAR {har_channels} data to contain {expected_channels} "
+            f"channels, got {train_data.shape}."
+        )
+
+    train_loader, vali_loader = _make_tensor_loaders(
+        train_data, vali_data, args.batch_size
+    )
+    _, test_loader = _make_tensor_loaders(
+        train_data, test_data, args.batch_size
+    )
+    bundle = UCIHARSubjectBundle(
+        train_loader=train_loader,
+        train_labels=train_labels,
+        vali_loader=vali_loader,
+        vali_labels=vali_labels,
+        test_loader=test_loader,
+        test_labels=test_labels,
+        train_subjects=train_subjects.tolist(),
+        vali_subjects=vali_subjects.tolist(),
+        test_subjects=test_subjects.tolist(),
+        har_channels=har_channels,
+    )
+    print(
+        f"UCI HAR official_subject: channels={har_channels}:{expected_channels}; "
+        f"subjects=train:{len(bundle.train_subjects)}/vali:{len(bundle.vali_subjects)}"
+        f"/test:{len(bundle.test_subjects)}; "
+        f"samples=train:{len(train_labels)}/vali:{len(vali_labels)}"
+        f"/test:{len(test_labels)}; split_seed=42; subject_leakage=PASS"
+    )
+    return bundle
+
+
+def write_uci_har_subject_split_audit(bundle, result_dir):
+    split_dir = Path(result_dir) / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+    output_path = split_dir / "UCIHAR_official_subject_split.csv"
+    rows = []
+    for split, subjects, official_partition in (
+        ("train", bundle.train_subjects, "train"),
+        ("vali", bundle.vali_subjects, "train"),
+        ("test", bundle.test_subjects, "test"),
+    ):
+        rows.extend((int(subject_id), official_partition, split) for subject_id in subjects)
+    with output_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["subject_id", "official_partition", "split"])
+        writer.writerows(sorted(rows))
+    return output_path
 
 
 def find_preprocessed_har_dir(data_dir, dirname, required=True):
@@ -680,8 +836,9 @@ def get_falltl_comparison_dataloaders(args):
             )
         )
     print(
-        "FallTL comparison_binary: sequence_length=256; labels=D:0/F:1; "
-        "split_seed=42; " + "; ".join(distributions)
+        "FallTL comparison_binary: one_sequence_per_csv; labels=D:0/F:1; "
+        f"padded_lengths=train:{train_data.shape[2]}/vali:{vali_data.shape[2]}"
+        f"/test:{test_data.shape[2]}; split_seed=42; " + "; ".join(distributions)
     )
     return bundle
 
@@ -819,6 +976,8 @@ def find_aaai27_data_root(data_dir, dataset_name):
     candidates = (
         base,
         base / "AAAI_Data",
+        base / "Neuro" / "AAAI_Data",
+        base / "Neuro",
         base / "med_data" / "AAAI_Data",
         base / "med_data",
     )
@@ -1202,13 +1361,9 @@ def get_dataloader(dataset, args):
 
     if args.datasets == "uci":
         uci_protocol = getattr(args, "uci_protocol", "official_subject")
-        signal_files = UCI_HAR_SIGNAL_FILES
-        channel_indices = range(9)
-        expected_channels = 9
-        if har_channels == "acc_gyro":
-            signal_files = UCI_HAR_ACC_GYRO_SIGNAL_FILES
-            channel_indices = UCI_HAR_ACC_GYRO_INDICES
-            expected_channels = 6
+        signal_files, channel_indices, expected_channels = (
+            _resolve_uci_har_channel_spec(har_channels)
+        )
 
         raw_uci_dir = None
         try:
