@@ -1,14 +1,8 @@
 # Anonymous artifact checklist
 
-Run the following before preparing a review artifact:
-
-```bash
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate neurosigvit
-cd NeuroSigViT-main
-python scripts/test_anonymity.py
-python scripts/check_anonymity.py
-```
+Run the verification commands in `README.md` before preparing a review
+artifact, then inspect the clean export for machine-specific paths and identity
+disclosures.
 
 The runtime writes sanitized arguments: absolute machine paths are replaced by
 `<ABSOLUTE_PATH>/<basename>` in `args.json` and feature-cache signatures. The

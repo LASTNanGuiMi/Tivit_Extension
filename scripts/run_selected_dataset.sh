@@ -22,25 +22,6 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$DATASET_KEY" in
-  falltl)
-    DATASET_GROUP="falltl"
-    DATASET_NAME="FallTL"
-    LABEL_PROTOCOL="comparison_binary"
-    dataset_args=(--falltl_protocol comparison_binary)
-    required_data_paths=("$DATA_DIR/FallTL")
-    ;;
-  ucihar)
-    DATASET_GROUP="uci"
-    DATASET_NAME="UCIHAR"
-    LABEL_PROTOCOL="official_subject_acc_gyro"
-    dataset_args=(--uci_protocol official_subject --har_channels acc_gyro)
-    required_data_paths=(
-      "$DATA_DIR/UCI HAR Dataset/train/Inertial Signals"
-      "$DATA_DIR/UCI HAR Dataset/test/Inertial Signals"
-      "$DATA_DIR/UCI HAR Dataset/train/subject_train.txt"
-      "$DATA_DIR/UCI HAR Dataset/test/subject_test.txt"
-    )
-    ;;
   shimmer10)
     DATASET_GROUP="aaai27"
     DATASET_NAME="Shimmer_10_session10_AFC"
@@ -56,7 +37,7 @@ case "$DATASET_KEY" in
     required_data_paths=("$DATA_DIR/Neuro/AAAI_Data/$DATASET_NAME")
     ;;
   *)
-    echo "Usage: $0 {falltl|ucihar|shimmer10|pads11} [extra main.py arguments]" >&2
+    echo "Usage: $0 {shimmer10|pads11} [extra main.py arguments]" >&2
     exit 2
     ;;
 esac
@@ -67,12 +48,6 @@ FEATURE_CACHE_DIR="${FEATURE_CACHE_DIR:-feature_cache/${DATASET_KEY}}"
 for path in "$MODEL_DIR" "$MANTIS_DIR" "${required_data_paths[@]}"; do
   [[ -e "$path" ]] || { echo "Missing required path: $path" >&2; exit 1; }
 done
-if [[ "$DATASET_KEY" == "falltl" ]]; then
-  compgen -G "$DATA_DIR/FallTL/*.csv" >/dev/null || {
-    echo "No FallTL CSV files found in $DATA_DIR/FallTL" >&2
-    exit 1
-  }
-fi
 if [[ "$DATASET_GROUP" == "aaai27" ]]; then
   for path in \
     "$DATA_DIR/Neuro/AAAI_Data/$DATASET_NAME/Feature" \

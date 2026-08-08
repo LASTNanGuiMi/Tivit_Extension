@@ -5,15 +5,15 @@ classification. It combines frozen CLIP ViT-H/14 visual representations of
 sensor activity graphs with frozen Mantis-8M temporal representations, then
 trains a lightweight fusion head and MLP classifier.
 
-The maintained artifact covers four datasets: FallTL, UCI HAR,
-`Shimmer_10_session10_AFC`, and `PADS_11_task08_TouchIndex`.
+![NeuroSigViT method overview](assets/neurosigvit_method.jpg)
+
+The maintained artifact focuses on `Shimmer_10_session10_AFC` and
+`PADS_11_task08_TouchIndex`.
 
 ## Selected protocols
 
 | Key | Dataset | Input | Split and endpoint |
 | --- | --- | --- | --- |
-| `falltl` | FallTL | variable-length, 9 channels | stratified file-level 60/20/20; `D=0`, `F=1` |
-| `ucihar` | UCI HAR | `(N,6,128)` | official subject-disjoint test split; validation subjects drawn from official training subjects |
 | `shimmer10` | `Shimmer_10_session10_AFC` | `(N,6,4096)` | subject-level 69/23/25; HC versus MildPD/ModeratePD |
 | `pads11` | `PADS_11_task08_TouchIndex` | `(N,6,976)` | subject-level 280/92/97 source split; Healthy versus Parkinson uses 212/70/73 after excluding OMD |
 
@@ -37,17 +37,13 @@ NeuroSigViT-main/
 |   |-- Neuro/AAAI_Data/
 |   |   |-- Shimmer_10_session10_AFC/
 |   |   `-- PADS_11_task08_TouchIndex/
-|   |-- FallTL                 # machine-local relative link
-|   `-- UCI HAR Dataset        # machine-local relative link
 |-- data_loading/
 |   `-- split_reference_seed42.csv
 |-- scripts/
 |   |-- run_selected_dataset.sh
-|   |-- run_falltl_example.sh
-|   |-- run_ucihar_example.sh
 |   |-- run_shimmer_example.sh
 |   |-- run_pads_example.sh
-|   `-- test_*.py
+|   `-- test_aaai27_datasets.py
 |-- DATA_PROCESSING.md
 |-- ANONYMITY.md
 |-- requirements.txt
@@ -90,8 +86,6 @@ and [`paris-noah/Mantis-8M`](https://huggingface.co/paris-noah/Mantis-8M).
 | --- | --- |
 | Shimmer / PDWearML | [IEEE DataPort](https://ieee-dataport.org/documents/pdwearml-leveraging-daily-activities-rapid-free-living-parkinsons-disease-severity), [PDWearML repository](https://github.com/wang-xulong/PDWearML) |
 | PADS | [PhysioNet PADS v1.0.0](https://physionet.org/content/parkinsons-disease-smartwatch/1.0.0/) |
-| FallTL | [Zenodo record 17552449](https://zenodo.org/records/17552449) |
-| UCI HAR | [UCI repository](https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones) |
 
 The original licenses and access terms apply.
 
@@ -123,8 +117,6 @@ DRY_RUN=1 bash scripts/run_selected_dataset.sh pads11
 From the repository root, first print each command without starting training:
 
 ```bash
-DRY_RUN=1 bash scripts/run_selected_dataset.sh falltl
-DRY_RUN=1 bash scripts/run_selected_dataset.sh ucihar
 DRY_RUN=1 bash scripts/run_selected_dataset.sh shimmer10
 DRY_RUN=1 bash scripts/run_selected_dataset.sh pads11
 ```
@@ -133,8 +125,6 @@ Remove `DRY_RUN=1` only after checking GPU availability. The convenience
 wrappers are equivalent:
 
 ```bash
-bash scripts/run_falltl_example.sh
-bash scripts/run_ucihar_example.sh
 bash scripts/run_shimmer_example.sh
 bash scripts/run_pads_example.sh
 ```
@@ -149,15 +139,11 @@ key.
 ```bash
 python -m compileall -q main.py src data_loading scripts
 bash -n scripts/run_selected_dataset.sh
-python scripts/test_anonymity.py
-python scripts/check_anonymity.py
-python scripts/test_paper_protocol.py
 python scripts/test_aaai27_datasets.py --data-dir data/Neuro
 ```
 
-These checks cover the selected subject splits and clinical endpoints,
-training-only normalization, CLIP patch-token pooling, Mantis channel pooling,
-feature-cache behavior, and anonymous runtime metadata.
+These checks cover the maintained Shimmer and PADS subject splits, clinical
+endpoints, tensor shapes, label mappings, and training-only normalization.
 
 ## Anonymous release
 
